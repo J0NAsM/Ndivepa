@@ -71,6 +71,14 @@ test('aplica una caché prudente a los recursos estáticos', async () => {
   assert.match(response.headers.get('cache-control') || '', /max-age=3600/);
 });
 
+test('expone salud y métricas Prometheus sin autenticar el panel', async () => {
+  const health = await fetch(`${origin}/healthz`);
+  assert.deepEqual(await health.json(), { status: 'ok' });
+  const metrics = await fetch(`${origin}/metrics`);
+  assert.match(metrics.headers.get('content-type') || '', /text\/plain/);
+  assert.match(await metrics.text(), /ndivepa_http_requests_total/);
+});
+
 test('protege los eventos administrativos y permite al administrador autenticado', async () => {
   const blocked = await fetch(`${origin}/api/admin/events`);
   assert.equal(blocked.status, 401);

@@ -64,6 +64,25 @@ export class Logger {
     );
   }
 
+  /** Exportación Prometheus sin rutas concretas ni datos de clientes. */
+  prometheus() {
+    const lines = [
+      '# HELP ndivepa_http_requests_total Requests handled by route.',
+      '# TYPE ndivepa_http_requests_total counter',
+      '# HELP ndivepa_http_request_duration_milliseconds HTTP route duration.',
+      '# TYPE ndivepa_http_request_duration_milliseconds summary',
+    ];
+    for (const [key, value] of this.metrics.entries()) {
+      const [method, ...path] = key.split(' ');
+      const labels = `method="${method}",route="${path.join(' ').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+      lines.push(`ndivepa_http_requests_total{${labels}} ${value.count}`);
+      lines.push(`ndivepa_http_request_duration_milliseconds_sum{${labels}} ${value.totalMs}`);
+      lines.push(`ndivepa_http_request_duration_milliseconds_count{${labels}} ${value.count}`);
+      lines.push(`ndivepa_http_request_duration_milliseconds_max{${labels}} ${value.maxMs}`);
+    }
+    return `${lines.join('\n')}\n`;
+  }
+
   reset() {
     this.metrics.clear();
   }

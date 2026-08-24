@@ -352,6 +352,24 @@ export function buildHttpApp(app) {
   });
   router.add({
     method: 'GET',
+    path: '/healthz',
+    permission: null,
+    bodyless: true,
+    summary: 'Sonda de vida del proceso, sin detalles internos.',
+    tags: ['operación'],
+    handler: ctx => respond.json(ctx.res, 200, { status: 'ok' }, { 'Cache-Control': 'no-store' }),
+  });
+  router.add({
+    method: 'GET',
+    path: '/metrics',
+    permission: null,
+    bodyless: true,
+    summary: 'Métricas de rutas en formato Prometheus.',
+    tags: ['operación'],
+    handler: ctx => respond.text(ctx.res, 200, logger.prometheus(), { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8', 'Cache-Control': 'no-store' }),
+  });
+  router.add({
+    method: 'GET',
     path: '/api/ready',
     permission: null,
     bodyless: true,
