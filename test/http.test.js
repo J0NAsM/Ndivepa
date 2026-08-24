@@ -87,6 +87,15 @@ test('expone catálogo mediante GraphQL con validación del esquema', async () =
   assert.ok(result.data.products.data[0].id);
 });
 
+test('protege el resumen GraphQL administrativo', async () => {
+  const anonymous = await fetch(`${origin}/api/v1/admin/graphql`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '{ adminSummary { products } }' }) });
+  assert.equal(anonymous.status, 401);
+  const session = await login();
+  const response = await fetch(`${origin}/api/v1/admin/graphql`, { method: 'POST', headers: session.headers, body: JSON.stringify({ query: '{ adminSummary { products orders customers } }' }) });
+  const result = await response.json();
+  assert.ok(result.data.adminSummary.products > 0);
+});
+
 test('protege los eventos administrativos y permite al administrador autenticado', async () => {
   const blocked = await fetch(`${origin}/api/admin/events`);
   assert.equal(blocked.status, 401);

@@ -343,6 +343,16 @@ export function buildHttpApp(app) {
     handler: async ctx => executeGraphql({ container, context: ctx, ...ctx.body }),
   });
   router.add({
+    method: 'POST',
+    path: '/api/v1/admin/graphql',
+    permission: 'settings:read',
+    csrf: false,
+    summary: 'API GraphQL administrativa autenticada.',
+    tags: ['graphql', 'operación'],
+    body: { query: { type: 'string', required: true, maxLength: 20_000 }, variables: { type: 'object', shape: {}, allowUnknown: true }, operationName: { type: 'string', maxLength: 120 } },
+    handler: async ctx => executeGraphql({ container, context: ctx, ...ctx.body }),
+  });
+  router.add({
     method: 'GET',
     path: '/api/openapi.json',
     permission: null,
