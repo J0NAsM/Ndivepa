@@ -6,6 +6,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 const port = 4397;
 const origin = `http://127.0.0.1:${port}`;
 let server;
+let adminSession;
 const databaseUrl = new URL('../data/db.json', import.meta.url);
 let originalDatabase;
 
@@ -34,6 +35,7 @@ function sessionCookie(response, csrfToken) {
 }
 
 async function login() {
+  if (adminSession) return adminSession;
   const response = await fetch(`${origin}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -42,11 +44,12 @@ async function login() {
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.ok(body.csrfToken);
-  return {
+  adminSession = {
     csrfToken: body.csrfToken,
     cookie: sessionCookie(response, body.csrfToken),
     headers: { 'Content-Type': 'application/json', cookie: sessionCookie(response, body.csrfToken), 'X-Ndivepa-Csrf': body.csrfToken },
   };
+  return adminSession;
 }
 
 before(async () => {
