@@ -1,0 +1,2 @@
+network_conversion_id,click_id,product_id,type,sale_amount,sale_currency,commission,commission_currency,status,date
+RED-10001,CLK-ABC123,aprod-notebook,purchase,999,USD,39.96,USD,pending,2026-08-17T10:00:00.000Z

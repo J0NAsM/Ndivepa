@@ -1,0 +1,20 @@
+services:
+  ndivepa:
+    build: .
+    ports:
+      - "4300:4300"
+    environment:
+      NODE_ENV: production
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:4300}
+    volumes:
+      - ndivepa-data:/app/data
+      - ndivepa-exports:/app/exports
+      - ndivepa-backups:/app/backups
+      - ndivepa-uploads:/app/public/uploads
+    restart: unless-stopped
+
+volumes:
+  ndivepa-data:
+  ndivepa-exports:
+  ndivepa-backups:
+  ndivepa-uploads:

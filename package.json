@@ -1,0 +1,25 @@
+{
+  "name": "ndivepa",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plataforma de comercio local inspirada en arquitecturas modulares headless.",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "reset-data": "node scripts/reset-data.js",
+    "maintenance": "node scripts/affiliate-maintenance.js",
+    "import-conversions": "node scripts/import-conversions.js",
+    "import-products": "node scripts/import-products.js",
+    "export-report": "node scripts/export-report.js",
+    "backup": "node scripts/backup-data.js",
+    "verify-backup": "node scripts/verify-backup.js",
+    "doctor": "node scripts/doctor.js",
+    "verify": "node scripts/verify.js",
+    "test": "node --test",
+    "check": "npm run verify && npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

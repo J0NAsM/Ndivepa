@@ -1,0 +1,2 @@
+name,description,category,type,merchant_id,program_id,affiliate_url,product_url,price,previous_price,currency,price_source,campaign_id,status,image
+Teclado mecánico,Teclado para trabajo y gaming,Tecnología,physical,mer-amazon,prog-amazon,https://www.amazon.com/dp/example-keyboard?tag=ndivepa-20,https://www.amazon.com/dp/example-keyboard,80,99,USD,manual,camp-tech,draft,⌨️
