@@ -213,7 +213,10 @@ export default {
             idempotencyKey: rule.text(120),
           },
           handler: ctx => {
-            assertCartOwner(ctx);
+            const record = assertCartOwner(ctx);
+            if (record.customerId) {
+              container.resolve('b2b').service.assertCheckout(record, record.customerId);
+            }
             return service().complete({
               cartId: ctx.params.id,
               paymentMethodId: ctx.body.paymentMethodId || null,

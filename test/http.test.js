@@ -178,6 +178,32 @@ test('usa sesiones opacas de cliente y no acepta un ID de cliente como cookie', 
   assert.equal((await forged.json()).customer, null);
 });
 
+test('crea una organización B2B y asigna al cliente creador como propietario', async () => {
+  const email = `empresa-${Date.now()}@example.test`;
+  await fetch(`${origin}/api/v1/store/customers/register`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: 'UnaClaveSegura2026!', firstName: 'Comprador' }),
+  });
+  const loginResponse = await fetch(`${origin}/api/v1/store/customers/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: 'UnaClaveSegura2026!' }),
+  });
+  const login = await loginResponse.json();
+  const cookies = (typeof loginResponse.headers.getSetCookie === 'function' ? loginResponse.headers.getSetCookie() : [loginResponse.headers.get('set-cookie') || '']).join('; ');
+  const customerToken = /ndivepa_customer=([^;]+)/.exec(cookies)?.[1];
+  const cookie = `ndivepa_customer=${customerToken}; ndivepa_csrf=${login.csrfToken}`;
+  const headers = { 'Content-Type': 'application/json', cookie, 'X-Ndivepa-Csrf': login.csrfToken };
+  const created = await fetch(`${origin}/api/v1/store/b2b/companies`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ name: 'Empresa de prueba', handle: `empresa-${Date.now()}`, currencyCode: 'USD', approvalThreshold: 10000 }),
+  });
+  assert.equal(created.status, 201);
+  const company = await created.json();
+  const memberships = await fetch(`${origin}/api/v1/store/b2b/me`, { headers: { cookie } });
+  const data = (await memberships.json()).data;
+  assert.equal(data.find(member => member.companyId === company.id)?.role, 'owner');
+});
+
 test('exige CSRF para mutaciones autenticadas y rechaza campos desconocidos', async () => {
   const session = await login();
   const missingToken = await fetch(`${origin}/api/admin/links/validate`, {

@@ -62,6 +62,7 @@ import affiliateModule from './modules/affiliate/index.js';
 import analyticsModule from './modules/analytics/index.js';
 import promotionModule from './modules/promotion/index.js';
 import loyaltyModule from './modules/loyalty/index.js';
+import b2bModule from './modules/b2b/index.js';
 import cartModule from './modules/cart/index.js';
 import orderModule from './modules/order/index.js';
 import paymentModule from './modules/payment/index.js';
@@ -88,6 +89,7 @@ export const MODULES = [
   analyticsModule,
   promotionModule,
   loyaltyModule,
+  b2bModule,
   cartModule,
   orderModule,
   paymentModule,

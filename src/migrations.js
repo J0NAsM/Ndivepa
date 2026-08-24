@@ -28,6 +28,7 @@ export const COLLECTIONS = [
   'giftCards', 'contents', 'merchants', 'networks', 'programs', 'placements',
   'campaigns', 'affiliateLinks', 'conversions', 'commissions', 'payouts', 'alerts',
   'loyaltyPrograms', 'loyaltyAccounts', 'loyaltyTransactions',
+  'b2bCompanies', 'b2bMembers', 'purchaseOrders',
   'audits', 'events', 'notifications', 'translations', 'jobs', 'webhooks',
   'webhookDeliveries', 'workflowRuns', 'imports',
 ];
