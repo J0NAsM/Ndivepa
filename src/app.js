@@ -314,6 +314,15 @@ export function buildHttpApp(app) {
       return { data, count: data.length, limit: data.length, offset: 0, hasMore: false };
     },
   });
+  admin.add({
+    method: 'GET',
+    path: '/integrations',
+    permission: 'settings:read',
+    summary: 'Estado de preparación de conectores externos, sin secretos.',
+    tags: ['operación'],
+    bodyless: true,
+    handler: () => config.integrations,
+  });
 
   // 4. API de tienda v1.
   const storeApi = new Router({ prefix: '/api/v1/store' });

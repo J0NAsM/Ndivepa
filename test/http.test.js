@@ -96,6 +96,15 @@ test('protege el resumen GraphQL administrativo', async () => {
   assert.ok(result.data.adminSummary.products > 0);
 });
 
+test('muestra el estado de conectores sin exponer secretos', async () => {
+  const session = await login();
+  const response = await fetch(`${origin}/api/v1/admin/integrations`, { headers: { cookie: session.cookie } });
+  const integrations = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(integrations.payment.configured, false);
+  assert.equal('apiKey' in integrations.payment, false);
+});
+
 test('protege los eventos administrativos y permite al administrador autenticado', async () => {
   const blocked = await fetch(`${origin}/api/admin/events`);
   assert.equal(blocked.status, 401);
