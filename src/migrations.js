@@ -17,7 +17,7 @@ import { now } from './framework/dates.js';
 export const COLLECTIONS = [
   'currencies', 'settingEntries', 'countries', 'provinces', 'zones', 'regions',
   'taxCategories', 'taxRates', 'channels', 'sellers', 'roles', 'users', 'invites',
-  'apiKeys', 'sessions', 'customerGroups', 'addresses', 'customers', 'assets', 'tags',
+  'apiKeys', 'sessions', 'customerSessions', 'customerGroups', 'addresses', 'customers', 'assets', 'tags',
   'categories', 'collections', 'facets', 'facetValues', 'productOptions', 'variants',
   'products', 'prices', 'priceLists', 'stockLocations', 'inventoryItems',
   'inventoryLevels', 'reservations', 'stockMovements', 'carts', 'orders',
@@ -27,6 +27,7 @@ export const COLLECTIONS = [
   'fulfillments', 'promotionCampaigns', 'promotions', 'coupons', 'promotionUsages',
   'giftCards', 'contents', 'merchants', 'networks', 'programs', 'placements',
   'campaigns', 'affiliateLinks', 'conversions', 'commissions', 'payouts', 'alerts',
+  'loyaltyPrograms', 'loyaltyAccounts', 'loyaltyTransactions',
   'audits', 'events', 'notifications', 'translations', 'jobs', 'webhooks',
   'webhookDeliveries', 'workflowRuns', 'imports',
 ];

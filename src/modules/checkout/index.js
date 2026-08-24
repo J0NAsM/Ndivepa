@@ -179,6 +179,14 @@ export default {
     store: container => {
       const service = () => container.resolve('checkout');
       const cart = () => container.resolve('cart');
+      const assertCartOwner = ctx => {
+        const record = cart().repository.retrieve(ctx.params.id);
+        if (record.customerId) {
+          const customer = container.resolve('customer').customers.customerFromRequest(ctx);
+          if (!customer || customer.id !== record.customerId) throw new ConflictError('El carrito no pertenece al cliente autenticado.');
+        }
+        return record;
+      };
       return [
         {
           method: 'GET',
@@ -189,7 +197,7 @@ export default {
           bodyless: true,
           handler: ctx => {
             container.resolve('settings').settings.assertCapability('checkout');
-            const record = cart().repository.retrieve(ctx.params.id);
+            const record = assertCartOwner(ctx);
             return { cart: cart().publicView(record), ...service().progress(record) };
           },
         },
@@ -197,7 +205,6 @@ export default {
           method: 'POST',
           path: '/carts/:id/complete',
           permission: null,
-          csrf: false,
           summary: 'Completa el checkout como workflow con compensación.',
           tags: ['store'],
           status: 201,
@@ -205,11 +212,14 @@ export default {
             paymentMethodId: rule.id(),
             idempotencyKey: rule.text(120),
           },
-          handler: ctx => service().complete({
-            cartId: ctx.params.id,
-            paymentMethodId: ctx.body.paymentMethodId || null,
-            idempotencyKey: ctx.body.idempotencyKey || ctx.req.headers['idempotency-key'] || null,
-          }, ctx),
+          handler: ctx => {
+            assertCartOwner(ctx);
+            return service().complete({
+              cartId: ctx.params.id,
+              paymentMethodId: ctx.body.paymentMethodId || null,
+              idempotencyKey: ctx.body.idempotencyKey || ctx.req.headers['idempotency-key'] || null,
+            }, ctx);
+          },
         },
       ];
     },

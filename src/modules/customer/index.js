@@ -13,6 +13,7 @@ import { hashPassword, verifyPassword, assertPasswordPolicy } from '../access/in
 import { token as generateToken, id as generateId } from '../../framework/ids.js';
 import { safeEqual } from '../../framework/strings.js';
 import { now, plusMinutes, toDate } from '../../framework/dates.js';
+import { issueCsrfToken } from '../../framework/http/middlewares.js';
 
 export const customerGroupResource = defineResource({
   name: 'customerGroup',
@@ -100,6 +101,23 @@ export const customerResource = defineResource({
     status: rule.enumOf(['active', 'blocked', 'anonymized'], { default: 'active' }),
     notes: rule.text(2000),
     metadata: rule.metadata(),
+  },
+});
+
+/** Sesiones opacas: la cookie nunca contiene ni expone el ID del cliente. */
+export const customerSessionResource = defineResource({
+  name: 'customerSession',
+  collection: 'customerSessions',
+  prefix: 'csess',
+  route: 'customer-sessions',
+  softDelete: false,
+  unique: ['token'],
+  searchable: ['customerId'],
+  fields: {
+    customerId: rule.id({ required: true }),
+    token: rule.text(160, { required: true }),
+    expiresAt: rule.date({ required: true }),
+    lastSeenAt: rule.date(),
   },
 });
 
@@ -196,6 +214,34 @@ export class CustomerService extends BaseService {
     this.addresses = deps.addresses;
     this.config = deps.config;
     this.notifications = deps.notifications;
+    this.sessions = deps.sessions;
+  }
+
+  async createSession(customerId) {
+    const token = generateToken(32);
+    return this.sessions.create({
+      customerId,
+      token,
+      expiresAt: plusMinutes(now(), 30 * 24 * 60),
+      lastSeenAt: now(),
+    });
+  }
+
+  customerFromSession(token) {
+    if (!token) return null;
+    const session = this.sessions.repository.find({ token });
+    if (!session || (toDate(session.expiresAt)?.getTime() ?? 0) <= Date.now()) return null;
+    const customer = this.repository.byId(session.customerId);
+    return customer?.hasAccount && customer.status === 'active' ? customer : null;
+  }
+
+  customerFromRequest(ctx) {
+    return this.customerFromSession(ctx.cookies.ndivepa_customer);
+  }
+
+  async revokeSession(token) {
+    const session = this.sessions.repository.find({ token });
+    if (session) await this.store.transaction(state => this.sessions.repository.remove(state, session.id));
   }
 
   publicView(customer) {
@@ -423,7 +469,7 @@ export class CustomerService extends BaseService {
 export default {
   name: 'customer',
   requires: ['store', 'events', 'audit', 'config', 'customFields', 'geography', 'notifications'],
-  resources: [customerGroupResource, addressResource, customerResource],
+  resources: [customerGroupResource, addressResource, customerResource, customerSessionResource],
   permissions: [
     { resource: 'customer', description: 'Clientes.' },
     { resource: 'customerGroup', description: 'Grupos de cliente.' },
@@ -433,7 +479,8 @@ export default {
   register(deps) {
     const groups = new CustomerGroupService(deps);
     const addresses = new AddressService(deps);
-    return { groups, addresses, customers: new CustomerService({ ...deps, groups, addresses }) };
+    const sessions = new BaseService(deps, customerSessionResource);
+    return { groups, addresses, sessions, customers: new CustomerService({ ...deps, groups, addresses, sessions }) };
   },
 
   async seed(service) {
@@ -486,10 +533,8 @@ export default {
     store: container => {
       const module = () => container.resolve('customer');
       const requireCustomer = ctx => {
-        const customerId = ctx.cookies.ndivepa_customer;
-        if (!customerId) throw new UnauthorizedError('Inicia sesión para continuar.');
-        const customer = module().customers.repository.byId(customerId);
-        if (!customer?.hasAccount) throw new UnauthorizedError('Inicia sesión para continuar.');
+        const customer = module().customers.customerFromRequest(ctx);
+        if (!customer) throw new UnauthorizedError('Inicia sesión para continuar.');
         return customer;
       };
       return [
@@ -523,24 +568,29 @@ export default {
           },
           handler: async ctx => {
             const customer = await module().customers.authenticate(ctx.body);
+            const session = await module().customers.createSession(customer.id);
             const secure = container.resolve('config').session.secure;
+            const csrfToken = issueCsrfToken();
             ctx.res.writeHead(200, {
               'Content-Type': 'application/json; charset=utf-8',
               'Cache-Control': 'no-store',
-              'Set-Cookie': `ndivepa_customer=${customer.id}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure ? '; Secure' : ''}`,
+              'Set-Cookie': [
+                `ndivepa_customer=${session.token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure ? '; Secure' : ''}`,
+                `ndivepa_csrf=${csrfToken}; SameSite=Lax; Path=/; Max-Age=2592000${secure ? '; Secure' : ''}`,
+              ],
             });
-            ctx.res.end(JSON.stringify({ customer: module().customers.publicView(customer) }));
+            ctx.res.end(JSON.stringify({ customer: module().customers.publicView(customer), csrfToken }));
           },
         },
         {
           method: 'POST',
           path: '/customers/logout',
           permission: null,
-          csrf: false,
           summary: 'Cierra la sesión del cliente.',
           tags: ['store'],
-          handler: ctx => {
-            ctx.res.writeHead(204, { 'Set-Cookie': 'ndivepa_customer=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0' });
+          handler: async ctx => {
+            await module().customers.revokeSession(ctx.cookies.ndivepa_customer);
+            ctx.res.writeHead(204, { 'Set-Cookie': ['ndivepa_customer=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0', 'ndivepa_csrf=; SameSite=Lax; Path=/; Max-Age=0'] });
             ctx.res.end();
           },
         },
@@ -552,9 +602,7 @@ export default {
           tags: ['store'],
           bodyless: true,
           handler: ctx => {
-            const customerId = ctx.cookies.ndivepa_customer;
-            if (!customerId) return { customer: null };
-            const customer = module().customers.repository.byId(customerId);
+            const customer = module().customers.customerFromRequest(ctx);
             return { customer: module().customers.publicView(customer) };
           },
         },

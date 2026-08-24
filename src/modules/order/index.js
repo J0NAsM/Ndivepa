@@ -70,6 +70,7 @@ export const orderResource = defineResource({
     paidTotal: rule.minor({ default: 0 }),
     refundedTotal: rule.minor({ default: 0 }),
     giftCardTotal: rule.minor({ default: 0 }),
+    loyaltyTotal: rule.minor({ default: 0 }),
     outstandingTotal: rule.minor({ default: 0 }),
     taxInclusive: rule.flag({ default: false }),
     note: rule.text(1000),
@@ -273,6 +274,7 @@ export class OrderService extends BaseService {
     this.history = deps.history;
     this.inventory = deps.inventory;
     this.promotion = deps.promotion;
+    this.loyalty = deps.loyalty;
     this.channel = deps.channel;
     this.geography = deps.geography;
     this.notifications = deps.notifications;
@@ -336,7 +338,7 @@ export class OrderService extends BaseService {
       total,
       paidTotal,
       refundedTotal,
-      outstandingTotal: clampToZero(total - paidTotal - Number(order.giftCardTotal || 0) - creditTotal + refundedTotal),
+      outstandingTotal: clampToZero(total - paidTotal - Number(order.giftCardTotal || 0) - Number(order.loyaltyTotal || 0) - creditTotal + refundedTotal),
     };
   }
 
@@ -407,6 +409,7 @@ export class OrderService extends BaseService {
       taxBreakdown: cart.taxBreakdown || [],
       taxInclusive: Boolean(cart.taxInclusive),
       giftCardTotal: cart.giftCardTotal || 0,
+      loyaltyTotal: cart.loyaltyTotal || 0,
       transactions: [],
       creditLines: [],
       note: cart.note || null,
@@ -445,11 +448,23 @@ export class OrderService extends BaseService {
         currencyCode: cart.currencyCode,
       }, ctx);
     }
+    let remainingGiftCardTotal = Number(cart.giftCardTotal || 0);
     for (const code of cart.giftCardCodes || []) {
       const card = this.promotion.giftCards.byCode(code);
       if (!card) continue;
-      const applicable = Math.min(card.balance, cart.giftCardTotal || 0);
-      if (applicable > 0) await this.promotion.giftCards.redeem(code, applicable, { orderId: order.id }, ctx);
+      const applicable = Math.min(card.balance, remainingGiftCardTotal);
+      if (applicable > 0) {
+        await this.promotion.giftCards.redeem(code, applicable, { orderId: order.id }, ctx);
+        remainingGiftCardTotal -= applicable;
+      }
+    }
+    if (cart.loyaltyRedemption) {
+      await this.loyalty.service.commitReservation({
+        cartId: cart.id,
+        orderId: order.id,
+        customerId: cart.customerId,
+        amount: cart.loyaltyTotal || 0,
+      }, ctx);
     }
 
     return withTotals.after;
@@ -1128,7 +1143,7 @@ export default {
   name: 'order',
   requires: [
     'store', 'events', 'audit', 'config', 'customFields', 'translations', 'settings', 'catalog',
-    'pricing', 'inventory', 'promotion', 'channel', 'geography', 'notifications', 'alert',
+    'pricing', 'inventory', 'promotion', 'loyalty', 'channel', 'geography', 'notifications', 'alert',
   ],
   resources: [
     orderResource, historyResource, returnReasonResource, returnResource,
@@ -1420,7 +1435,7 @@ export default {
           tags: ['store'],
           bodyless: true,
           handler: ctx => {
-            const customerId = ctx.cookies.ndivepa_customer;
+            const customerId = container.resolve('customer').customers.customerFromRequest(ctx)?.id || null;
             if (!customerId) return { data: [], count: 0 };
             const data = module().orders.repository
               .all({ customerId })
@@ -1449,7 +1464,7 @@ export default {
             note: rule.text(600),
           },
           handler: ctx => {
-            const customerId = ctx.cookies.ndivepa_customer;
+            const customerId = container.resolve('customer').customers.customerFromRequest(ctx)?.id || null;
             const order = module().orders.repository.retrieve(ctx.body.orderId);
             if (!customerId || order.customerId !== customerId) {
               throw new NotFoundError('pedido', ctx.body.orderId);

@@ -148,6 +148,36 @@ test('ofrece el aviso técnico de privacidad sin indexarlo', async () => {
   assert.match(html, /Revisión antes de publicar/);
 });
 
+test('usa sesiones opacas de cliente y no acepta un ID de cliente como cookie', async () => {
+  const email = `cliente-${Date.now()}@example.test`;
+  const registered = await fetch(`${origin}/api/v1/store/customers/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: 'UnaClaveSegura2026!', firstName: 'Cliente' }),
+  });
+  assert.equal(registered.status, 201);
+
+  const loginResponse = await fetch(`${origin}/api/v1/store/customers/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password: 'UnaClaveSegura2026!' }),
+  });
+  assert.equal(loginResponse.status, 200);
+  const loginBody = await loginResponse.json();
+  assert.ok(loginBody.csrfToken);
+  const cookies = (typeof loginResponse.headers.getSetCookie === 'function'
+    ? loginResponse.headers.getSetCookie()
+    : [loginResponse.headers.get('set-cookie') || '']).join('; ');
+  const token = /ndivepa_customer=([^;]+)/.exec(cookies)?.[1];
+  assert.ok(token);
+  assert.notEqual(token, loginBody.customer.id);
+
+  const profile = await fetch(`${origin}/api/v1/store/customers/me`, { headers: { cookie: `ndivepa_customer=${token}` } });
+  assert.equal((await profile.json()).customer.id, loginBody.customer.id);
+  const forged = await fetch(`${origin}/api/v1/store/customers/me`, { headers: { cookie: `ndivepa_customer=${loginBody.customer.id}` } });
+  assert.equal((await forged.json()).customer, null);
+});
+
 test('exige CSRF para mutaciones autenticadas y rechaza campos desconocidos', async () => {
   const session = await login();
   const missingToken = await fetch(`${origin}/api/admin/links/validate`, {

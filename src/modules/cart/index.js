@@ -10,7 +10,7 @@
  */
 import { BaseService, crudRoutes, defineResource } from '../base.js';
 import { rule } from '../../framework/validate.js';
-import { ConflictError, NotFoundError, ValidationError } from '../../framework/errors.js';
+import { ConflictError, NotFoundError, UnauthorizedError, ValidationError } from '../../framework/errors.js';
 import { add, clampToZero, distribute } from '../../framework/money.js';
 import { id as generateId, token as generateToken } from '../../framework/ids.js';
 import { createHmac } from 'node:crypto';
@@ -37,6 +37,15 @@ export const cartResource = defineResource({
     appliedPromotions: { type: 'array', default: [] },
     couponCodes: rule.list({ type: 'string' }, { default: [] }),
     giftCardCodes: rule.list({ type: 'string' }, { default: [] }),
+    loyaltyRedemption: {
+      type: 'object',
+      shape: {
+        transactionId: rule.id(),
+        programId: rule.id(),
+        points: rule.quantity(),
+        amount: rule.minor(),
+      },
+    },
     surcharges: { type: 'array', default: [] },
     note: rule.text(1000),
     subtotal: rule.minor({ default: 0 }),
@@ -46,6 +55,7 @@ export const cartResource = defineResource({
     surchargeTotal: rule.minor({ default: 0 }),
     total: rule.minor({ default: 0 }),
     giftCardTotal: rule.minor({ default: 0 }),
+    loyaltyTotal: rule.minor({ default: 0 }),
     payableTotal: rule.minor({ default: 0 }),
     warnings: { type: 'array', default: [] },
     status: rule.enumOf(['active', 'abandoned', 'completed', 'expired'], { default: 'active' }),
@@ -71,6 +81,7 @@ export class CartService extends BaseService {
     this.channel = deps.channel;
     this.customer = deps.customer;
     this.promotion = deps.promotion;
+    this.loyalty = deps.loyalty;
     this.locks = deps.locks;
     this.config = deps.config;
   }
@@ -113,6 +124,7 @@ export class CartService extends BaseService {
       items: [],
       couponCodes: [],
       giftCardCodes: [],
+      loyaltyRedemption: null,
       appliedPromotions: [],
       surcharges: [],
       warnings: [],
@@ -312,6 +324,45 @@ export class CartService extends BaseService {
     return this.recalculate(cartId, ctx);
   }
 
+  /** Reserva puntos de la cuenta autenticada para este carrito. */
+  async applyLoyalty(cartId, points, customerId, ctx = null) {
+    this.assertEnabled();
+    const cart = this.retrieveActive(cartId);
+    if (!cart.customerId || cart.customerId !== customerId) {
+      throw new UnauthorizedError('El carrito no pertenece al cliente autenticado.');
+    }
+    // Calculamos antes de reservar para no inmovilizar más puntos de los necesarios.
+    const current = await this.recalculate(cartId, ctx);
+    const maximumAmount = clampToZero(current.total - current.giftCardTotal);
+    if (maximumAmount <= 0) throw new ConflictError('El carrito ya está cubierto por tarjetas regalo.');
+    const redemption = await this.loyalty.service.reserve({
+      customerId,
+      cartId,
+      currencyCode: current.currencyCode,
+      points,
+      maximumAmount,
+    }, ctx);
+    await this.store.transaction(state => this.repository.patch(state, cartId, {
+      loyaltyRedemption: redemption,
+      lastActivityAt: now(),
+    }));
+    return this.recalculate(cartId, ctx);
+  }
+
+  async removeLoyalty(cartId, customerId, ctx = null) {
+    this.assertEnabled();
+    const cart = this.retrieveActive(cartId);
+    if (!cart.customerId || cart.customerId !== customerId) {
+      throw new UnauthorizedError('El carrito no pertenece al cliente autenticado.');
+    }
+    await this.loyalty.service.releaseReservation({ cartId, customerId, reason: 'removed_from_cart' }, ctx);
+    await this.store.transaction(state => this.repository.patch(state, cartId, {
+      loyaltyRedemption: null,
+      lastActivityAt: now(),
+    }));
+    return this.recalculate(cartId, ctx);
+  }
+
   /**
    * Recalcula el carrito completo (M-0597).
    *
@@ -432,6 +483,14 @@ export class CartService extends BaseService {
       if (applicable > 0) giftCardTotal += applicable;
     }
 
+    // La cantidad mostrada procede de una reserva real; no se confía en el JSON del carrito.
+    const redemption = cart.loyaltyRedemption
+      ? this.loyalty.service.redemptionForCart(cart.id, cart.customerId, cart.currencyCode)
+      : null;
+    const loyaltyTotal = redemption
+      ? Math.min(redemption.amount, clampToZero(total - giftCardTotal))
+      : 0;
+
     const updated = await this.store.transaction(state => this.repository.patch(state, cartId, {
       items,
       subtotal,
@@ -441,7 +500,8 @@ export class CartService extends BaseService {
       surchargeTotal,
       total,
       giftCardTotal,
-      payableTotal: clampToZero(total - giftCardTotal),
+      loyaltyTotal,
+      payableTotal: clampToZero(total - giftCardTotal - loyaltyTotal),
       appliedPromotions: promotionResult.applied,
       promotionEvaluation: promotionResult.evaluated,
       taxBreakdown: taxResult.breakdown,
@@ -591,7 +651,7 @@ export default {
   name: 'cart',
   requires: [
     'store', 'events', 'audit', 'config', 'customFields', 'settings', 'catalog', 'pricing',
-    'inventory', 'tax', 'geography', 'channel', 'customer', 'promotion', 'locks',
+    'inventory', 'tax', 'geography', 'channel', 'customer', 'promotion', 'loyalty', 'locks',
   ],
   resources: [cartResource],
   permissions: [{ resource: 'cart', description: 'Carritos de compra.' }],
@@ -636,6 +696,7 @@ export default {
     store: container => {
       const service = () => container.resolve('cart');
       const cartOf = ctx => service().publicView(service().repository.retrieve(ctx.params.id));
+      const customerId = ctx => container.resolve('customer').customers.customerFromRequest(ctx)?.id || null;
       return [
         {
           method: 'POST',
@@ -652,7 +713,7 @@ export default {
             email: rule.email(),
           },
           handler: async ctx => {
-            const customerId = ctx.cookies.ndivepa_customer || null;
+            const customerId = container.resolve('customer').customers.customerFromRequest(ctx)?.id || null;
             const cart = await service().createCart({
               ...ctx.body,
               customerId,
@@ -756,6 +817,30 @@ export default {
         },
         {
           method: 'POST',
+          path: '/carts/:id/loyalty',
+          permission: null,
+          summary: 'Reserva puntos de fidelización para pagar parte del carrito.',
+          tags: ['carrito', 'fidelización'],
+          body: { points: rule.quantity({ required: true, min: 1 }) },
+          handler: async ctx => {
+            if (!customerId(ctx)) throw new UnauthorizedError('Inicia sesión para usar puntos.');
+            return service().publicView(await service().applyLoyalty(ctx.params.id, ctx.body.points, customerId(ctx), ctx));
+          },
+        },
+        {
+          method: 'DELETE',
+          path: '/carts/:id/loyalty',
+          permission: null,
+          summary: 'Libera los puntos reservados en el carrito.',
+          tags: ['carrito', 'fidelización'],
+          bodyless: true,
+          handler: async ctx => {
+            if (!customerId(ctx)) throw new UnauthorizedError('Inicia sesión para usar puntos.');
+            return service().publicView(await service().removeLoyalty(ctx.params.id, customerId(ctx), ctx));
+          },
+        },
+        {
+          method: 'POST',
           path: '/carts/:id/merge',
           permission: null,
           csrf: false,
@@ -763,7 +848,7 @@ export default {
           tags: ['store'],
           body: { strategy: rule.enumOf(['combine', 'use_existing', 'use_guest'], { default: 'combine' }) },
           handler: async ctx => {
-            const customerId = ctx.cookies.ndivepa_customer;
+            const customerId = container.resolve('customer').customers.customerFromRequest(ctx)?.id || null;
             if (!customerId) throw new ConflictError('No hay una sesión de cliente activa.');
             const cart = await service().merge({ guestCartId: ctx.params.id, customerId, strategy: ctx.body.strategy }, ctx);
             return service().publicView(cart);
