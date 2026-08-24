@@ -106,6 +106,13 @@ export function loadConfig(env = process.env) {
       search: readBoolean(env.FEATURE_SEARCH, true),
       twoFactor: readBoolean(env.FEATURE_2FA, true),
     },
+
+    integrations: {
+      payment: { provider: env.PAYMENT_PROVIDER || 'external', configured: Boolean(env.PAYMENT_API_KEY), webhookConfigured: Boolean(env.PAYMENT_WEBHOOK_SECRET) },
+      smtp: { configured: Boolean(env.SMTP_URL), from: env.SMTP_FROM || null },
+      storage: { configured: Boolean(env.S3_ENDPOINT && env.S3_BUCKET && env.S3_ACCESS_KEY && env.S3_SECRET_KEY), cdnConfigured: Boolean(env.CDN_BASE_URL) },
+      search: { provider: env.SEARCH_PROVIDER || null, configured: Boolean(env.SEARCH_API_KEY) },
+    },
   };
 
   validateConfig(config);
