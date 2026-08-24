@@ -79,6 +79,14 @@ test('expone salud y métricas Prometheus sin autenticar el panel', async () => 
   assert.match(await metrics.text(), /ndivepa_http_requests_total/);
 });
 
+test('expone catálogo mediante GraphQL con validación del esquema', async () => {
+  const response = await fetch(`${origin}/api/graphql`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '{ products(limit: 1) { count data { id name } } }' }) });
+  const result = await response.json();
+  assert.equal(response.status, 200);
+  assert.ok(result.data.products.count > 0);
+  assert.ok(result.data.products.data[0].id);
+});
+
 test('protege los eventos administrativos y permite al administrador autenticado', async () => {
   const blocked = await fetch(`${origin}/api/admin/events`);
   assert.equal(blocked.status, 401);

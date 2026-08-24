@@ -41,6 +41,7 @@ import { HttpApp } from './framework/http/pipeline.js';
 import { buildOpenApi, renderDocsPage } from './framework/http/openapi.js';
 import { serveStatic } from './framework/http/middlewares.js';
 import * as respond from './framework/http/respond.js';
+import { executeGraphql } from './framework/graphql.js';
 
 import { registerMigrations, COLLECTIONS } from './migrations.js';
 import { AuditService } from './modules/base.js';
@@ -331,6 +332,16 @@ export function buildHttpApp(app) {
 
   // Documentación generada desde las rutas ya registradas.
   const spec = buildOpenApi({ router, config, version: '0.2.0' });
+  router.add({
+    method: 'POST',
+    path: '/api/graphql',
+    permission: null,
+    csrf: false,
+    summary: 'API GraphQL de lectura para catálogo y configuración pública.',
+    tags: ['graphql'],
+    body: { query: { type: 'string', required: true, maxLength: 20_000 }, variables: { type: 'object', shape: {}, allowUnknown: true }, operationName: { type: 'string', maxLength: 120 } },
+    handler: async ctx => executeGraphql({ container, context: ctx, ...ctx.body }),
+  });
   router.add({
     method: 'GET',
     path: '/api/openapi.json',
