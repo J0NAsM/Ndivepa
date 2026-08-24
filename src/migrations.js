@@ -30,6 +30,7 @@ export const COLLECTIONS = [
   'loyaltyPrograms', 'loyaltyAccounts', 'loyaltyTransactions',
   'b2bCompanies', 'b2bMembers', 'purchaseOrders',
   'subscriptions', 'subscriptionRenewals',
+  'storeCreditAccounts', 'storeCreditTransactions',
   'audits', 'events', 'notifications', 'translations', 'jobs', 'webhooks',
   'webhookDeliveries', 'workflowRuns', 'imports',
 ];

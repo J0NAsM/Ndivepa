@@ -64,6 +64,7 @@ import promotionModule from './modules/promotion/index.js';
 import loyaltyModule from './modules/loyalty/index.js';
 import b2bModule from './modules/b2b/index.js';
 import subscriptionModule from './modules/subscription/index.js';
+import storeCreditModule from './modules/store-credit/index.js';
 import cartModule from './modules/cart/index.js';
 import orderModule from './modules/order/index.js';
 import paymentModule from './modules/payment/index.js';
@@ -92,6 +93,7 @@ export const MODULES = [
   loyaltyModule,
   b2bModule,
   subscriptionModule,
+  storeCreditModule,
   cartModule,
   orderModule,
   paymentModule,

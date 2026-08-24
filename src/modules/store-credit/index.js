@@ -1,0 +1,26 @@
+/** Saldo monetario por cliente, independiente de puntos y tarjetas regalo. */
+import { BaseService, defineResource } from '../base.js';
+import { rule } from '../../framework/validate.js';
+import { ConflictError, UnauthorizedError } from '../../framework/errors.js';
+import { now } from '../../framework/dates.js';
+
+export const accountResource = defineResource({ name: 'storeCreditAccount', collection: 'storeCreditAccounts', prefix: 'sca', route: 'store-credit-accounts', searchable: ['customerId', 'currencyCode'], fields: { customerId: rule.id({ required: true }), currencyCode: rule.currency({ required: true }), balance: rule.minor({ default: 0 }), metadata: rule.metadata() } });
+export const transactionResource = defineResource({ name: 'storeCreditTransaction', collection: 'storeCreditTransactions', prefix: 'sct', route: 'store-credit-transactions', softDelete: false, searchable: ['customerId', 'orderId', 'type'], fields: { accountId: rule.id({ required: true }), customerId: rule.id({ required: true }), orderId: rule.id(), currencyCode: rule.currency({ required: true }), amount: rule.minor({ required: true }), type: rule.enumOf(['credit', 'debit', 'refund', 'adjustment'], { required: true }), reason: rule.text(300), metadata: rule.metadata() } });
+class StoreCreditService {
+  constructor(deps) { this.store = deps.store; this.accounts = new BaseService(deps, accountResource); this.transactions = new BaseService(deps, transactionResource); }
+  summary(customerId) { return this.accounts.repository.all({ customerId }).map(account => ({ ...account, transactions: this.transactions.repository.all({ accountId: account.id }).slice(0, 20) })); }
+  async change({ customerId, currencyCode, amount, type = 'adjustment', reason = null, orderId = null, metadata = {} }, ctx = null) {
+    if (!Number.isInteger(Number(amount)) || !amount) throw new ConflictError('El importe debe ser un entero distinto de cero.');
+    const record = await this.store.transaction(state => {
+      let account = this.accounts.repository.raw(state).find(row => row.customerId === customerId && row.currencyCode === currencyCode && !row.deletedAt);
+      if (!account) account = this.accounts.repository.insert(state, { customerId, currencyCode, balance: 0, metadata: {} });
+      if (account.balance + Number(amount) < 0) throw new ConflictError('El saldo de crédito no es suficiente.', { balance: account.balance, requested: Math.abs(amount) });
+      const transaction = this.transactions.repository.insert(state, { accountId: account.id, customerId, orderId, currencyCode, amount: Number(amount), type, reason, metadata });
+      this.accounts.repository.patch(state, account.id, { balance: account.balance + Number(amount) });
+      return transaction;
+    });
+    return record;
+  }
+  async refundToCredit(refund) { const order = this.store.collection('orders').find(row => row.id === refund.orderId); if (!order?.customerId) return null; const exists = this.transactions.repository.find({ orderId: refund.orderId, type: 'refund', 'metadata.refundId': refund.id }); if (exists) return exists; return this.change({ customerId: order.customerId, currencyCode: order.currencyCode, amount: refund.amount, type: 'refund', reason: refund.reason, orderId: order.id, metadata: { refundId: refund.id } }); }
+}
+export default { name: 'storeCredit', requires: ['store', 'events', 'audit', 'config', 'customFields'], resources: [accountResource, transactionResource], permissions: [{ resource: 'storeCreditAccount', actions: ['read', 'update'], description: 'Crédito de tienda.' }, { resource: 'storeCreditTransaction', actions: ['read'], description: 'Movimientos de crédito.' }], register(deps) { const service = new StoreCreditService(deps); return { service, accounts: service.accounts, transactions: service.transactions }; }, routes: { admin: container => [{ method: 'GET', path: '/store-credit-accounts', permission: 'storeCreditAccount:read', bodyless: true, summary: 'Saldos de crédito de tienda.', tags: ['crédito'], handler: ctx => container.resolve('storeCredit').accounts.list(ctx.query) }, { method: 'GET', path: '/store-credit-transactions', permission: 'storeCreditTransaction:read', bodyless: true, summary: 'Libro mayor de crédito.', tags: ['crédito'], handler: ctx => container.resolve('storeCredit').transactions.list(ctx.query) }, { method: 'POST', path: '/store-credit/adjust', permission: 'storeCreditAccount:update', summary: 'Abona o descuenta crédito con trazabilidad.', tags: ['crédito'], body: { customerId: rule.id({ required: true }), currencyCode: rule.currency({ required: true }), amount: rule.minor({ required: true }), reason: rule.text(300, { required: true }) }, handler: ctx => container.resolve('storeCredit').service.change({ ...ctx.body, type: 'adjustment' }, ctx) }], store: container => [{ method: 'GET', path: '/store-credit/me', permission: null, bodyless: true, summary: 'Saldo y movimientos propios de crédito.', tags: ['crédito'], handler: ctx => { const customer = container.resolve('customer').customers.customerFromRequest(ctx); if (!customer) throw new UnauthorizedError('Inicia sesión para continuar.'); return { accounts: container.resolve('storeCredit').service.summary(customer.id) }; } }] } };
