@@ -9,7 +9,7 @@
  * Esto es lo que sustituye al `mapped` del monolito, que aceptaba cualquier clave
  * del cuerpo sin validar nada.
  */
-import { Repository } from '../framework/repository.js';
+import { isSafePath, Repository } from '../framework/repository.js';
 import { validate, rule } from '../framework/validate.js';
 import { ValidationError } from '../framework/errors.js';
 import { now } from '../framework/dates.js';
@@ -58,6 +58,7 @@ export const LIST_QUERY = {
   order: rule.text(120),
   fields: rule.text(500),
   expand: rule.text(300),
+  locale: rule.text(10),
   withDeleted: rule.flag(),
   filter: { type: 'object', shape: {}, allowUnknown: true },
 };
@@ -69,8 +70,9 @@ export function parseOrder(input, fallback = { createdAt: 'desc' }) {
   for (const part of String(input).split(',')) {
     const trimmed = part.trim();
     if (!trimmed) continue;
-    if (trimmed.startsWith('-')) order[trimmed.slice(1)] = 'desc';
-    else order[trimmed.replace(/^\+/, '')] = 'asc';
+    const field = trimmed.replace(/^[-+]/, '');
+    if (!isSafePath(field)) throw ValidationError.single('order', `Campo de orden no permitido: ${field || '(vacío)'}.`);
+    order[field] = trimmed.startsWith('-') ? 'desc' : 'asc';
   }
   return Object.keys(order).length ? order : fallback;
 }
@@ -81,14 +83,17 @@ export function parseOrder(input, fallback = { createdAt: 'desc' }) {
  */
 export function buildFilter(query, resource) {
   const filter = {};
+  const allowed = listableFields(resource);
   for (const [key, raw] of Object.entries(query.filter || {})) {
     const operatorMatch = /^(.+?)\[(\$[a-z]+)\]$/.exec(key);
     if (operatorMatch) {
       const [, field, operator] = operatorMatch;
+      if (!allowed.has(field) || !isSafePath(field)) throw ValidationError.single(`filter.${field}`, 'Campo de filtro no permitido.');
       filter[field] = filter[field] || {};
       filter[field][operator] = coerceScalar(raw);
       continue;
     }
+    if (!allowed.has(key) || !isSafePath(key)) throw ValidationError.single(`filter.${key}`, 'Campo de filtro no permitido.');
     if (String(raw).includes(',')) {
       filter[key] = { $in: String(raw).split(',').map(coerceScalar) };
       continue;
@@ -99,6 +104,22 @@ export function buildFilter(query, resource) {
     filter.$or = resource.searchable.map(field => ({ [field]: { $ilike: query.q } }));
   }
   return filter;
+}
+
+const SYSTEM_FIELDS = ['id', 'createdAt', 'updatedAt', 'deletedAt'];
+
+/** Campos públicos que se pueden filtrar, ordenar o proyectar en un listado. */
+function listableFields(resource) {
+  const fields = new Set([...SYSTEM_FIELDS, ...(resource.searchable || [])]);
+  const visit = (shape, prefix = '') => {
+    for (const [name, definition] of Object.entries(shape || {})) {
+      const path = prefix ? `${prefix}.${name}` : name;
+      fields.add(path);
+      if (definition?.type === 'object' && definition.shape && !definition.allowUnknown) visit(definition.shape, path);
+    }
+  };
+  visit(resource.fields);
+  return fields;
 }
 
 function coerceScalar(value) {
@@ -159,16 +180,27 @@ export class BaseService {
 
   list(query = {}, { locale = null } = {}) {
     const parsed = validate(query, LIST_QUERY, { partial: true });
+    const allowed = listableFields(this.resource);
+    const order = parseOrder(parsed.order);
+    for (const field of Object.keys(order)) {
+      if (!allowed.has(field)) throw ValidationError.single('order', `No se puede ordenar por ${field}.`);
+    }
+    const select = parsed.fields ? String(parsed.fields).split(',').map(field => field.trim()).filter(Boolean) : null;
+    for (const field of select || []) {
+      if (!allowed.has(field) || !isSafePath(field)) throw ValidationError.single('fields', `No se puede proyectar ${field}.`);
+    }
+    const expand = parsed.expand ? String(parsed.expand).split(',').map(field => field.trim()).filter(Boolean) : [];
+    const unknownExpansions = expand.filter(field => !this.resource.expand.includes(field));
+    if (unknownExpansions.length) throw ValidationError.single('expand', `Relaciones no expandibles: ${unknownExpansions.join(', ')}.`);
     const result = this.repository.list({
       filter: buildFilter(parsed, this.resource),
-      order: parseOrder(parsed.order),
+      order,
       limit: parsed.limit ?? 50,
       offset: parsed.offset ?? 0,
       after: parsed.after || null,
-      select: parsed.fields ? String(parsed.fields).split(',').map(field => field.trim()) : null,
+      select,
       withDeleted: Boolean(parsed.withDeleted),
     });
-    const expand = parsed.expand ? String(parsed.expand).split(',').map(field => field.trim()) : [];
     let data = result.data;
     if (locale && this.translations && this.resource.translatable.length) {
       data = this.translations.applyAll(data, this.resource.name, locale);
@@ -224,6 +256,7 @@ export class BaseService {
   async update(identifier, input, ctx = null) {
     const existing = this.repository.retrieve(identifier);
     const changes = await this.beforeUpdate(existing, this.sanitize(input, { partial: true }), ctx);
+    if (!changes || !Object.keys(changes).length) throw ValidationError.single('body', 'Envía al menos un campo para actualizar.');
     const { before, after } = await this.store.transaction(state => this.repository.patch(state, identifier, changes));
     await this.emit('updated', after, ctx, before);
     await this.afterUpdate(before, after, ctx);

@@ -3,17 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#111b33" />
+    <meta name="theme-color" content="#111b33" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f6f8fc" media="(prefers-color-scheme: light)" />
+    <meta name="color-scheme" content="light" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <meta name="description" content="Recomendaciones de productos y servicios seleccionados. Las compras se completan directamente con cada proveedor." />
     <meta name="robots" content="index,follow" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="es_PY" />
+    <meta property="og:title" content="Ndivepa · Recomendaciones que dan claridad" />
+    <meta property="og:description" content="Recomendaciones transparentes; la compra se completa con cada proveedor." />
     <title>Ndivepa · Recomendaciones que dan claridad</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/site.webmanifest" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/store.css" />
     <link rel="stylesheet" href="/analytics.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <a class="skip-link" href="#main-content">Saltar al contenido</a>
+    <div id="app" aria-busy="true"><main class="loading-view" id="main-content"><p>Cargando recomendaciones…</p></main></div>
     <div id="toast" role="status" aria-live="polite"></div>
+    <noscript><p class="noscript">Ndivepa necesita JavaScript para cargar el catálogo y administrar tus preferencias.</p></noscript>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

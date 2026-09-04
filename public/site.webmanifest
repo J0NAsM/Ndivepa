@@ -1,0 +1,14 @@
+{
+  "name": "Ndivepa",
+  "short_name": "Ndivepa",
+  "description": "Recomendaciones afiliadas transparentes.",
+  "lang": "es-PY",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f8fc",
+  "theme_color": "#111b33",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

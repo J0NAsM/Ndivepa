@@ -9,6 +9,7 @@ import { mkdir, writeFile, unlink, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { resolve, sep } from 'node:path';
 import { ValidationError } from './errors.js';
 
 /** Firma binaria por tipo (M-0111): la extensión y el `mime` declarado se pueden falsear. */
@@ -57,8 +58,17 @@ export class LocalFileProvider {
     this.name = 'local';
   }
 
+  target(filename) {
+    const base = resolve(this.directory);
+    const target = resolve(base, String(filename || ''));
+    if (target === base || !target.startsWith(base + sep) || String(filename).split(/[\\/]/).some(part => !part || part === '.' || part === '..')) {
+      throw ValidationError.single('filename', 'Nombre de fichero no permitido.');
+    }
+    return target;
+  }
+
   async save(filename, bytes) {
-    const target = join(this.directory, filename);
+    const target = this.target(filename);
     await mkdir(join(target, '..'), { recursive: true });
     // `wx` falla si el fichero existe: nunca se sobrescribe en silencio.
     await writeFile(target, bytes, { flag: 'wx' });
@@ -66,19 +76,20 @@ export class LocalFileProvider {
   }
 
   async remove(filename) {
-    await unlink(join(this.directory, filename)).catch(() => {});
+    try { await unlink(this.target(filename)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
 
   async read(filename) {
-    return readFile(join(this.directory, filename));
+    return readFile(this.target(filename));
   }
 }
 
 export class FileService {
-  constructor({ provider, naming = 'uuid', allowed = Object.keys(SIGNATURES), logger } = {}) {
+  constructor({ provider, naming = 'uuid', allowed = Object.keys(SIGNATURES), maxBytes = null, logger } = {}) {
     this.provider = provider;
     this.naming = naming;
     this.allowed = allowed;
+    this.maxBytes = maxBytes;
     this.logger = logger;
   }
 
@@ -90,9 +101,16 @@ export class FileService {
     if (!this.allowed.includes(mime)) {
       throw ValidationError.single('data', `Tipo de fichero no admitido. Admitidos: ${this.allowed.join(', ')}.`);
     }
-    const bytes = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+    const encoded = match[2].replace(/\s+/g, '');
+    const limit = Math.min(SIZE_LIMITS[mime] || 700_000, this.maxBytes || Number.MAX_SAFE_INTEGER);
+    if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+      throw ValidationError.single('data', 'El contenido base64 está mal formado.');
+    }
+    if (encoded.length > Math.ceil(limit / 3) * 4 + 4) {
+      throw ValidationError.single('data', `El fichero excede el límite de ${Math.round(limit / 1000)} KB.`);
+    }
+    const bytes = Buffer.from(encoded, 'base64');
     if (!bytes.length) throw ValidationError.single('data', 'El fichero está vacío.');
-    const limit = SIZE_LIMITS[mime] || 700_000;
     if (bytes.length > limit) {
       throw ValidationError.single('data', `El fichero excede el límite de ${Math.round(limit / 1000)} KB.`);
     }
@@ -106,15 +124,26 @@ export class FileService {
   /** Guarda y devuelve los metadatos del fichero, incluido el hash para deduplicar. */
   async store(input, { naming = this.naming } = {}) {
     const { mime, bytes, hash } = this.decodeDataUri(input);
-    const filename = namingStrategies[naming]({ bytes, mime });
+    const strategy = namingStrategies[naming];
+    if (!strategy) throw ValidationError.single('naming', `Estrategia de nombre no reconocida: ${naming}.`);
+    const filename = strategy({ bytes, mime });
     const saved = await this.provider.save(filename, bytes);
+    const dimensions = readDimensions(bytes, mime);
+    if (dimensions.width !== null && (
+      dimensions.width < 1 || dimensions.height < 1
+      || dimensions.width > 12_000 || dimensions.height > 12_000
+      || dimensions.width * dimensions.height > 40_000_000
+    )) {
+      await this.provider.remove(filename).catch(() => {});
+      throw ValidationError.single('data', 'Las dimensiones de la imagen no son válidas o son excesivas.');
+    }
     return {
       url: saved.url,
       filename,
       mime,
       bytes: bytes.length,
       hash,
-      dimensions: readDimensions(bytes, mime),
+      dimensions,
       provider: this.provider.name,
     };
   }

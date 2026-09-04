@@ -5,9 +5,21 @@
  * Resolución por método y segmentos, con `:param` y comodín final `*`. Si la ruta
  * existe pero el método no, responde 405 con `Allow` en lugar de un 404 engañoso.
  */
-import { MethodNotAllowedError, NotFoundError } from '../errors.js';
+import { BadRequestError, MethodNotAllowedError, NotFoundError } from '../errors.js';
 
 const PARAM = /^:(.+)$/;
+const METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+const UNSAFE_PARAMETER = /[\/\\\0]/;
+
+function decodeParameter(value, name) {
+  try {
+    const decoded = decodeURIComponent(value);
+    if (UNSAFE_PARAMETER.test(decoded)) throw new Error('separator');
+    return decoded;
+  } catch {
+    throw new BadRequestError(`El parámetro de ruta "${name}" no está codificado correctamente.`);
+  }
+}
 
 export class Router {
   constructor({ prefix = '' } = {}) {
@@ -32,13 +44,30 @@ export class Router {
     if (definition.permission === undefined) {
       throw new Error(`La ruta ${method} ${path} debe declarar \`permission\` (usa null para pública).`);
     }
+    const upperMethod = String(method).toUpperCase();
+    if (!METHODS.has(upperMethod)) throw new Error(`Método HTTP no soportado: ${method}.`);
+    if (!path.startsWith('/') || path.includes('?') || path.includes('#')) {
+      throw new Error(`La ruta debe empezar por / y no incluir consulta ni fragmento: ${path}.`);
+    }
     const full = `${this.prefix}${path}`.replace(/\/+$/, '') || '/';
+    const segments = full.split('/').filter(Boolean);
+    const wildcard = segments.indexOf('*');
+    if (wildcard >= 0 && wildcard !== segments.length - 1) throw new Error(`El comodín debe ser el último segmento: ${full}.`);
+    for (const segment of segments) {
+      if (segment.startsWith(':') && !/^:[A-Za-z][A-Za-z0-9_]*$/.test(segment)) {
+        throw new Error(`Parámetro de ruta inválido en ${full}: ${segment}.`);
+      }
+    }
+    if (this.routes.some(route => route.method === upperMethod && route.path === full)) {
+      throw new Error(`Ruta duplicada: ${upperMethod} ${full}.`);
+    }
     this.routes.push({
       ...definition,
-      method: method.toUpperCase(),
+      method: upperMethod,
       path: full,
-      segments: full.split('/').filter(Boolean),
+      segments,
     });
+    this.sortedCache = null;
     return this;
   }
 
@@ -50,7 +79,13 @@ export class Router {
 
   /** Incorpora las rutas de otro router. */
   merge(other) {
+    for (const incoming of other.routes) {
+      if (this.routes.some(route => route.method === incoming.method && route.path === incoming.path)) {
+        throw new Error(`Ruta duplicada: ${incoming.method} ${incoming.path}.`);
+      }
+    }
     this.routes.push(...other.routes);
+    this.sortedCache = null;
     return this;
   }
 
@@ -66,7 +101,7 @@ export class Router {
       if (actual === undefined) return null;
       const parameter = PARAM.exec(expected);
       if (parameter) {
-        params[parameter[1]] = decodeURIComponent(actual);
+        params[parameter[1]] = decodeParameter(actual, parameter[1]);
         continue;
       }
       if (expected !== actual) return null;

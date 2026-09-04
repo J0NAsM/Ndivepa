@@ -207,10 +207,9 @@ export function legacyRoutes(container) {
           userAgent: ctx.userAgent,
           locale: ctx.locale,
           channelId: ctx.channelId,
-          // La v0.1 registraba sin consentimiento explícito; se mantiene ese
-          // comportamiento solo aquí, porque el visitante ya aceptó la analítica
-          // interna en el banner antes de que la SPA llame a esta ruta.
-          consent: ctx.body.consent ?? true,
+          // Sin una señal explícita no se registra: los clientes que no ejecutan
+          // la SPA pueden usar el cuerpo, la cookie o `?consent=1`.
+          consent: ctx.body.consent ?? ctx.consent,
         });
         return { ok: true };
       },

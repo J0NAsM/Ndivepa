@@ -2,11 +2,15 @@
   "name": "ndivepa",
   "version": "0.1.0",
   "private": true,
-  "description": "Plataforma de comercio local inspirada en arquitecturas modulares headless.",
+  "description": "Plataforma de inteligencia de afiliación con arquitectura modular headless.",
   "type": "module",
   "scripts": {
     "dev": "node --watch server.js",
     "start": "node server.js",
+    "seed": "node scripts/seed.js",
+    "migrate": "node scripts/migrate.js",
+    "reindex": "node scripts/reindex.js",
+    "openapi": "node scripts/openapi.js",
     "reset-data": "node scripts/reset-data.js",
     "maintenance": "node scripts/affiliate-maintenance.js",
     "import-conversions": "node scripts/import-conversions.js",
@@ -15,9 +19,12 @@
     "backup": "node scripts/backup-data.js",
     "verify-backup": "node scripts/verify-backup.js",
     "doctor": "node scripts/doctor.js",
+    "lint": "node scripts/lint.js",
     "verify": "node scripts/verify.js",
     "test": "node --test",
-    "check": "npm run verify && npm test"
+    "audit:dependencies": "npm audit --omit=dev --audit-level=high",
+    "check": "npm run lint && npm run verify && npm test",
+    "check:full": "npm run check && npm run audit:dependencies"
   },
   "engines": {
     "node": ">=20"

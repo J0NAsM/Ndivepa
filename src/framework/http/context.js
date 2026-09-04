@@ -5,9 +5,18 @@
  * canal, cuerpo validado y query normalizada. Los servicios reciben este contexto,
  * nunca `req`/`res`: así se pueden probar sin levantar un servidor.
  */
-import { PayloadTooLargeError, UnsupportedMediaTypeError, ValidationError } from '../errors.js';
+import { BadRequestError, PayloadTooLargeError, UnsupportedMediaTypeError, ValidationError } from '../errors.js';
 import { jsonDepth, validate } from '../validate.js';
 import { id as generateId } from '../ids.js';
+
+/** Cookie opcional de consentimiento de analítica, para clientes ajenos a la SPA. */
+export const CONSENT_COOKIE = 'ndivepa-analytics-consent';
+
+/** Identificador de correlación aceptable: alfanumérico, guion y punto, 80 caracteres. */
+export function safeRequestId(value) {
+  const candidate = String(value ?? '').trim().slice(0, 80);
+  return /^[A-Za-z0-9._-]+$/.test(candidate) ? candidate : null;
+}
 
 export function parseCookies(header = '') {
   const out = {};
@@ -16,7 +25,10 @@ export function parseCookies(header = '') {
     if (!trimmed) continue;
     const index = trimmed.indexOf('=');
     if (index < 0) continue;
-    out[trimmed.slice(0, index)] = trimmed.slice(index + 1);
+    const name = trimmed.slice(0, index);
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || Object.hasOwn(out, name)) continue;
+    const raw = trimmed.slice(index + 1);
+    try { out[name] = decodeURIComponent(raw); } catch { out[name] = raw; }
   }
   return out;
 }
@@ -26,11 +38,21 @@ export async function readJsonBody(req, { maxBytes = 1_000_000, maxDepth = 24 } 
   const method = req.method?.toUpperCase();
   if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return {};
 
-  const declared = Number(req.headers['content-length'] || 0);
+  const rawLength = req.headers['content-length'];
+  const declared = rawLength === undefined ? null : Number(rawLength);
+  if (declared !== null && (!Number.isSafeInteger(declared) || declared < 0)) {
+    throw new BadRequestError('Content-Length no es válido.');
+  }
   if (declared > maxBytes) throw new PayloadTooLargeError(maxBytes);
 
+  const encoding = String(req.headers['content-encoding'] || 'identity').trim().toLowerCase();
+  if (encoding !== 'identity') throw new UnsupportedMediaTypeError(`content-encoding: ${encoding}`);
+
   const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-  if (contentType && contentType !== 'application/json') throw new UnsupportedMediaTypeError(contentType);
+  if (contentType && contentType !== 'application/json' && !contentType.endsWith('+json')) {
+    throw new UnsupportedMediaTypeError(contentType);
+  }
+  if (declared > 0 && !contentType) throw new UnsupportedMediaTypeError(null);
 
   const chunks = [];
   let size = 0;
@@ -40,12 +62,16 @@ export async function readJsonBody(req, { maxBytes = 1_000_000, maxDepth = 24 } 
     chunks.push(chunk);
   }
   if (!size) return {};
+  if (!contentType) throw new UnsupportedMediaTypeError(null);
 
   let parsed;
   try {
     parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } catch {
     throw ValidationError.single('body', 'El cuerpo debe ser JSON válido.');
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw ValidationError.single('body', 'El cuerpo JSON debe ser un objeto.');
   }
   if (jsonDepth(parsed) > maxDepth) {
     throw ValidationError.single('body', `El JSON supera la profundidad máxima de ${maxDepth} niveles.`);
@@ -54,14 +80,19 @@ export async function readJsonBody(req, { maxBytes = 1_000_000, maxDepth = 24 } 
 }
 
 /** Query normalizada: soporta `a=1&a=2` como array y `filter[status]=x` anidado. */
-export function parseQuery(searchParams) {
+export function parseQuery(searchParams, { maxParams = 100 } = {}) {
   const out = {};
+  let count = 0;
   for (const [key, value] of searchParams) {
+    count += 1;
+    if (count > maxParams) throw new BadRequestError(`La consulta supera el máximo de ${maxParams} parámetros.`);
     const nested = /^([a-zA-Z0-9_]+)\[([a-zA-Z0-9_.$]+)\]$/.exec(key);
     if (nested) {
       const [, root, child] = nested;
       out[root] = out[root] || {};
-      out[root][child] = value;
+      if (out[root][child] === undefined) out[root][child] = value;
+      else if (Array.isArray(out[root][child])) out[root][child].push(value);
+      else out[root][child] = [out[root][child], value];
       continue;
     }
     if (out[key] === undefined) out[key] = value;
@@ -78,11 +109,15 @@ export class RequestContext {
     this.url = url;
     this.config = config;
     this.container = container;
-    this.requestId = req.headers['x-request-id']?.slice(0, 80) || generateId('req');
+    // El identificador que propone el cliente se acepta para poder correlacionar
+    // trazas con un proxy, pero saneado: va a las cabeceras de respuesta y a los
+    // registros, y un valor con saltos de línea o caracteres de control rompería
+    // la respuesta o ensuciaría el log.
+    this.requestId = safeRequestId(req.headers['x-request-id']) || generateId('req');
     this.logger = logger?.child({ requestId: this.requestId }) || logger;
     this.i18n = i18n;
     this.cookies = parseCookies(req.headers.cookie);
-    this.query = parseQuery(url.searchParams);
+    this.query = parseQuery(url.searchParams, { maxParams: config?.security?.maxQueryParams || 100 });
     this.params = {};
     this.body = {};
     this.actor = null;
@@ -91,7 +126,12 @@ export class RequestContext {
     this.channelId = null;
     this.locale = i18n?.negotiate(req.headers['accept-language'], this.query.locale) || config?.defaultLocale || 'es';
     this.startedAt = Date.now();
-    this.consent = this.cookies['ndivepa-analytics-consent'] === 'granted' || this.query.consent === '1';
+    // Consentimiento de analítica por defecto, para las rutas que no lo reciben
+    // en el cuerpo (`ctx.body.consent ?? ctx.consent`). El valor por defecto es
+    // «no»: sin señal explícita no se registra nada. La interfaz propia guarda la
+    // preferencia en `localStorage` y la envía en cada petición; la cookie y el
+    // parámetro existen para integraciones que no ejecutan esa interfaz.
+    this.consent = this.cookies[CONSENT_COOKIE] === 'granted' || this.query.consent === '1';
   }
 
   resolve(name) {

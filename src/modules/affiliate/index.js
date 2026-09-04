@@ -11,6 +11,7 @@ import { BaseService, crudRoutes, defineResource } from '../base.js';
 import { rule } from '../../framework/validate.js';
 import { ConflictError, ValidationError } from '../../framework/errors.js';
 import { validateAffiliateLink, deriveHealth } from './link-validation.js';
+import { TrendsDiscoveryService } from './trends.js';
 import { percentage, toMinor } from '../../framework/money.js';
 import { ageInDays, now, toDate, DAY } from '../../framework/dates.js';
 import { humanCode } from '../../framework/ids.js';
@@ -82,6 +83,9 @@ export const programResource = defineResource({
     affiliateId: rule.text(80),
     trackingId: rule.text(80),
     requiredTrackingKey: rule.text(40),
+    approvalStatus: rule.enumOf(['pending', 'approved', 'revoked'], { default: 'pending' }),
+    credentialsVerifiedAt: rule.date(),
+    autoDiscovery: rule.flag({ default: false }),
     commissionType: rule.enumOf(['percentage', 'flat', 'tiered'], { default: 'percentage' }),
     estimatedCommission: { type: 'number', coerce: true, min: 0, max: 100000 },
     commissionCurrency: rule.currency(),
@@ -199,6 +203,12 @@ export const conversionResource = defineResource({
     saleCurrency: rule.currency(),
     commission: rule.minor(),
     commissionCurrency: rule.currency(),
+    // De dónde sale `commission`: lo que informó la red o lo que estima el
+    // programa. Un importe estimado no se puede presentar como confirmado, y sin
+    // esta marca las dos cosas eran indistinguibles en el panel.
+    commissionSource: rule.enumOf(['reported', 'estimated', 'none'], { default: 'none' }),
+    // Regla que produjo la estimación: `percentage`, `flat`, `tier_percent`, `tier_flat`.
+    commissionBasis: rule.text(20),
     status: rule.enumOf(CONVERSION_STATUSES, { default: 'pending' }),
     source: rule.enumOf(['manual', 'import_csv', 'postback', 'api'], { default: 'manual' }),
     importId: rule.id(),
@@ -298,6 +308,27 @@ export class ProgramService extends BaseService {
       }))
       .sort((a, b) => (b.estimated?.amount || 0) - (a.estimated?.amount || 0) || a.priority - b.priority);
   }
+
+  /** Requisitos que impiden presentar como monetizable un programa incompleto. */
+  discoveryReadiness(program) {
+    const merchant = this.store.collection('merchants').find(row => row.id === program?.merchantId && !row.deletedAt);
+    const network = this.store.collection('networks').find(row => row.id === program?.networkId && !row.deletedAt);
+    const reasons = [];
+    if (!program) reasons.push('El programa no existe.');
+    if (program?.status !== 'active') reasons.push('El programa no está activo.');
+    if (program?.approvalStatus !== 'approved') reasons.push('La afiliación no está marcada como aprobada.');
+    if (!program?.credentialsVerifiedAt) reasons.push('Falta confirmar la verificación de credenciales.');
+    if (!program?.autoDiscovery) reasons.push('La importación desde tendencias no está habilitada.');
+    if (!program?.trackingId || !program?.requiredTrackingKey) reasons.push('Faltan el tracking ID o su parámetro requerido.');
+    if (!merchant || merchant.status !== 'active') reasons.push('El comercio no está activo.');
+    if (!network || network.status !== 'active') reasons.push('La red de afiliación no está activa.');
+    return {
+      eligible: reasons.length === 0,
+      reasons,
+      merchant: merchant ? { id: merchant.id, name: merchant.name } : null,
+      network: network ? { id: network.id, name: network.name } : null,
+    };
+  }
 }
 
 export class AffiliateLinkService extends BaseService {
@@ -338,6 +369,38 @@ export class AffiliateLinkService extends BaseService {
       status: validation.status,
       validation,
       health: deriveHealth(validation, data.affiliateUrl),
+      reviewState: validation.status === 'valid' ? 'done' : 'queued',
+    };
+  }
+
+  /**
+   * El estado, el diagnóstico y la salud son derivados: ningún cliente puede
+   * declararlos válidos mediante PATCH sin que la URL se compruebe de nuevo.
+   */
+  async beforeUpdate(existing, changes) {
+    const candidate = { ...existing, ...changes };
+    const product = this.store.collection('products').find(row => row.id === candidate.productId);
+    const merchantId = candidate.merchantId || product?.merchantId || null;
+    const programId = candidate.programId || product?.programId || null;
+    const validation = this.preview({
+      affiliateUrl: candidate.affiliateUrl,
+      productUrl: candidate.productUrl,
+      merchantId,
+      programId,
+    });
+    if (validation.status === 'invalid') {
+      throw new ValidationError(
+        validation.messages.map(message => ({ field: 'affiliateUrl', message })),
+        'El enlace de afiliado no es válido.',
+      );
+    }
+    return {
+      ...changes,
+      merchantId,
+      programId,
+      status: validation.status,
+      validation,
+      health: deriveHealth(validation, candidate.affiliateUrl),
       reviewState: validation.status === 'valid' ? 'done' : 'queued',
     };
   }
@@ -567,9 +630,42 @@ export class ConversionService extends BaseService {
     const attribution = this.attribute(data);
     return {
       ...data,
+      ...this.resolveCommission(data),
       date: data.date || now(),
       attribution,
       reviewReason: attribution.attributed ? null : `Revisión: ${attribution.reason}`,
+    };
+  }
+
+  /**
+   * Comisión de la conversión y su procedencia (M-0561 … M-0563).
+   *
+   * Si la red informa el importe, se respeta tal cual y se marca `reported`. Si
+   * no lo informa, se estima con las reglas del programa —porcentaje, importe
+   * fijo o tramo— y se marca `estimated`. Antes no se estimaba nada: `approve()`
+   * creaba la comisión con `conversion.commission || 0`, así que toda conversión
+   * importada sin columna de comisión generaba una comisión de importe cero y el
+   * cálculo por tramos del programa no se usaba en ninguna parte.
+   */
+  resolveCommission(data) {
+    const currency = data.commissionCurrency || data.saleCurrency || 'USD';
+    // Ausente y cero no son lo mismo: una red puede informar una conversión con
+    // comisión cero (devolución, producto excluido) y eso es un dato, no un hueco
+    // que haya que rellenar con una estimación.
+    const reported = data.commission;
+    if (reported !== undefined && reported !== null && Number.isFinite(Number(reported))) {
+      return { commission: Number(reported), commissionCurrency: currency, commissionSource: 'reported' };
+    }
+    const program = data.programId ? this.programs.repository.byId(data.programId) : null;
+    const estimate = this.programs.estimateCommission(program, data.saleAmount);
+    if (!estimate || !Number.isFinite(Number(estimate.amount))) {
+      return { commission: 0, commissionCurrency: currency, commissionSource: 'none' };
+    }
+    return {
+      commission: Number(estimate.amount),
+      commissionCurrency: program?.commissionCurrency || currency,
+      commissionSource: 'estimated',
+      commissionBasis: estimate.basis,
     };
   }
 
@@ -615,6 +711,7 @@ export class ConversionService extends BaseService {
         currency: conversion.commissionCurrency || 'USD',
         status: 'approved',
         approvedAt: now(),
+        metadata: { source: conversion.commissionSource || 'none', basis: conversion.commissionBasis || null },
       }, ctx);
     } else {
       await commissions.update(existing.id, { status: 'approved', approvedAt: now() }, ctx);
@@ -706,7 +803,7 @@ export class PayoutService extends BaseService {
 
 export default {
   name: 'affiliate',
-  requires: ['store', 'events', 'audit', 'config', 'customFields', 'settings', 'alert'],
+  requires: ['store', 'events', 'audit', 'config', 'customFields', 'settings', 'alert', 'logger'],
   resources: [
     merchantResource, networkResource, programResource, placementResource,
     affiliateCampaignResource, affiliateLinkResource, conversionResource,
@@ -734,7 +831,8 @@ export default {
     const links = new AffiliateLinkService({ ...deps, programs });
     const conversions = new ConversionService({ ...deps, programs, commissions });
     const payouts = new PayoutService({ ...deps, commissions });
-    return { merchants, networks, programs, placements, campaigns, links, conversions, commissions, payouts };
+    const discovery = new TrendsDiscoveryService(deps);
+    return { merchants, networks, programs, placements, campaigns, links, conversions, commissions, payouts, discovery };
   },
 
   jobs: container => [
@@ -784,6 +882,153 @@ export default {
         ...crudRoutes(conversionResource, () => module().conversions, { tags: ['afiliación'] }),
         ...crudRoutes(commissionResource, () => module().commissions, { tags: ['afiliación'] }),
         ...crudRoutes(payoutResource, () => module().payouts, { tags: ['afiliación'] }),
+        {
+          method: 'GET',
+          path: '/affiliate-opportunities',
+          permission: 'product:create',
+          summary: 'Descubre consultas en tendencia para revisarlas como posibles productos afiliados.',
+          tags: ['afiliación', 'descubrimiento'],
+          bodyless: true,
+          query: {
+            geo: rule.text(2),
+            limit: { type: 'integer', coerce: true, min: 1, max: 100, default: 50 },
+            refresh: rule.flag({ default: false }),
+          },
+          handler: async ctx => {
+            const result = await module().discovery.trends({
+              geo: ctx.query.geo,
+              limit: ctx.query.limit,
+              refresh: ctx.query.refresh,
+            });
+            const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+            const catalog = container.resolve('catalog');
+            const existing = new Set(catalog.products.repository.all().map(product => normalize(product.name)));
+            const programs = module().programs.repository.all().map(program => ({
+              id: program.id,
+              name: program.name,
+              ...module().programs.discoveryReadiness(program),
+            }));
+            return {
+              ...result,
+              items: result.items
+                .map(item => ({ ...item, alreadyCatalogued: existing.has(normalize(item.query)) }))
+                .sort((left, right) => (
+                  right.productLikelihood - left.productLikelihood
+                  || (right.traffic || 0) - (left.traffic || 0)
+                )),
+              eligiblePrograms: programs.filter(program => program.eligible),
+              blockedPrograms: programs.filter(program => !program.eligible),
+            };
+          },
+        },
+        {
+          method: 'POST',
+          path: '/affiliate-opportunities/import',
+          permission: 'product:create',
+          summary: 'Convierte una tendencia revisada en producto y enlace afiliado validados.',
+          tags: ['afiliación', 'descubrimiento'],
+          status: 201,
+          body: {
+            query: rule.text(200, { required: true }),
+            name: rule.text(200, { required: true }),
+            description: rule.longText({ required: true, minLength: 20 }),
+            geo: rule.text(2),
+            programId: rule.id({ required: true }),
+            categoryId: rule.id(),
+            productUrl: rule.url({ required: true }),
+            affiliateUrl: rule.url({ required: true }),
+            type: rule.enumOf(['physical', 'digital', 'service', 'course', 'bundle', 'subscription', 'other'], { default: 'other' }),
+            price: { type: 'number', coerce: true, min: 0 },
+            previousPrice: { type: 'number', coerce: true, min: 0 },
+            currency: rule.currency({ default: 'USD' }),
+            publish: rule.flag({ default: false }),
+          },
+          handler: async ctx => {
+            container.resolve('rbac').assert(ctx.actor, 'affiliateLink:create');
+            const body = ctx.body;
+            const trend = await module().discovery.find(body.query, { geo: body.geo });
+            if (!trend) throw ValidationError.single('query', 'La consulta ya no está en el feed de Google Trends seleccionado.');
+
+            const program = module().programs.repository.retrieve(body.programId);
+            const readiness = module().programs.discoveryReadiness(program);
+            if (!readiness.eligible) {
+              throw new ConflictError(`El programa afiliado no está listo: ${readiness.reasons.join(' ')}`, {
+                programId: program.id,
+                reasons: readiness.reasons,
+              });
+            }
+            const merchant = module().merchants.repository.retrieve(program.merchantId);
+            const validation = module().links.preview({
+              affiliateUrl: body.affiliateUrl,
+              productUrl: body.productUrl,
+              merchantId: merchant.id,
+              programId: program.id,
+            });
+            if (validation.status === 'invalid') {
+              throw new ValidationError(
+                validation.messages.map(message => ({ field: 'affiliateUrl', message })),
+                'El enlace afiliado no permite atribuir la comisión.',
+              );
+            }
+
+            const catalog = container.resolve('catalog');
+            const duplicate = catalog.products.repository.all().find(product => (
+              product.name.localeCompare(body.name, 'es', { sensitivity: 'base' }) === 0
+            ));
+            if (duplicate) throw new ConflictError('Ya existe un producto con ese nombre.', { productId: duplicate.id });
+
+            const currency = body.currency || container.resolve('settings').settings.get('defaultCurrency', 'USD');
+            const hasPrice = body.price !== '' && body.price !== null && body.price !== undefined;
+            const hasPreviousPrice = body.previousPrice !== '' && body.previousPrice !== null && body.previousPrice !== undefined;
+            const product = await catalog.products.create({
+              name: body.name,
+              description: body.description,
+              categoryId: body.categoryId || null,
+              categoryIds: body.categoryId ? [body.categoryId] : [],
+              type: body.type,
+              image: '🔎',
+              merchantId: merchant.id,
+              programId: program.id,
+              monetizationType: 'AFFILIATE',
+              status: 'draft',
+              price: {
+                amount: hasPrice ? toMinor(body.price, currency) : null,
+                previousAmount: hasPreviousPrice ? toMinor(body.previousPrice, currency) : null,
+                currency,
+                source: 'manual',
+                updatedAt: hasPrice ? now() : null,
+              },
+              metadata: {
+                discovery: {
+                  source: trend.source,
+                  query: trend.query,
+                  geo: String(body.geo || container.resolve('config').discovery.googleTrendsGeo).toUpperCase(),
+                  approximateTraffic: trend.approximateTraffic,
+                  trendPublishedAt: trend.publishedAt,
+                  importedAt: now(),
+                },
+              },
+            }, ctx);
+            let link;
+            try {
+              link = await module().links.create({
+                productId: product.id,
+                merchantId: merchant.id,
+                programId: program.id,
+                productUrl: body.productUrl,
+                affiliateUrl: body.affiliateUrl,
+                label: `Google Trends: ${trend.query}`.slice(0, 120),
+              }, ctx);
+            } catch (error) {
+              await catalog.products.delete(product.id, ctx).catch(() => {});
+              throw error;
+            }
+            const finalProduct = body.publish
+              ? await catalog.products.update(product.id, { status: 'published' }, ctx)
+              : product;
+            return { product: finalProduct, link, trend, published: finalProduct.status === 'published' };
+          },
+        },
         {
           method: 'POST',
           path: '/links/validate',

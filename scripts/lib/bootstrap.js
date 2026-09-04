@@ -8,10 +8,19 @@
 import { createApp } from '../../src/app.js';
 
 /**
+ * Arranca la aplicación igual que el servidor, pero sin escuchar en un puerto.
+ *
+ * `seed` viene activado a propósito. Con la semilla desactivada, un `npm run
+ * verify` sobre una instalación nueva creaba el documento con las colecciones
+ * vacías y sin sembrar; el servidor arrancaba después, encontraba el fichero ya
+ * migrado y dejaba la instalación a medias: catálogo vacío, panel sin datos y
+ * `npm run check` en rojo. La semilla es idempotente, así que activarla aquí no
+ * duplica nada y hace que los scripts vean la misma instalación que el servidor.
+ *
  * @param {{seed?:boolean, jobs?:boolean}} options
  * @returns {Promise<object>} la aplicación construida, sin servidor HTTP
  */
-export async function bootstrapCli({ seed = false, jobs = false } = {}) {
+export async function bootstrapCli({ seed = true, jobs = false } = {}) {
   const app = await createApp({
     env: { ...process.env, JOBS_ENABLED: jobs ? 'true' : 'false', LOG_LEVEL: process.env.LOG_LEVEL || 'info' },
     seed,

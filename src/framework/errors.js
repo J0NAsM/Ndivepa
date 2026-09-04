@@ -34,6 +34,13 @@ export class ValidationError extends NdivepaError {
   }
 }
 
+/** Petición HTTP sintácticamente inválida (URL, cabeceras o cuerpo). */
+export class BadRequestError extends NdivepaError {
+  constructor(message = 'La solicitud no es válida.', details = null) {
+    super(message, { code: 'bad_request', status: 400, details });
+  }
+}
+
 export class NotFoundError extends NdivepaError {
   constructor(resource, identifier) {
     const message = identifier

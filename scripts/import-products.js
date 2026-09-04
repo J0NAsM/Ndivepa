@@ -6,23 +6,28 @@
  *
  * Uso: npm run import-products -- .\ruta\productos.csv [--dry-run]
  */
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { bootstrapCli, finish, printTable, requireArg } from './lib/bootstrap.js';
-import { parseCsvLine } from '../src/framework/strings.js';
+import { parseCsv } from '../src/framework/strings.js';
 import { toMinor } from '../src/framework/money.js';
 import { now } from '../src/framework/dates.js';
 
 const filePath = requireArg(2, 'Uso: npm run import-products -- .\\ruta\\productos.csv [--dry-run]');
 const dryRun = process.argv.includes('--dry-run');
 
+const fileInfo = await stat(filePath);
+if (fileInfo.size > 10_000_000) throw new Error('El CSV supera el límite operativo de 10 MB.');
 const raw = await readFile(filePath, 'utf8');
-const lines = raw.split(/\r?\n/).filter(line => line.trim().length);
-if (lines.length < 2) {
+const rows = parseCsv(raw, { maxRows: 50_001, maxColumns: 200 }).filter(row => row.some(cell => cell !== ''));
+if (rows.length < 2) {
   console.error('El CSV no tiene filas de datos.');
   process.exit(1);
 }
 
-const headers = parseCsvLine(lines[0]).map(header => header.trim().toLowerCase());
+const headers = rows[0].map(header => header.trim().toLowerCase());
+const duplicateHeaders = headers.filter((header, index) => headers.indexOf(header) !== index);
+if (duplicateHeaders.length) throw new Error(`El CSV contiene encabezados duplicados: ${[...new Set(duplicateHeaders)].join(', ')}.`);
 const REQUIRED = ['name', 'merchant_id', 'program_id', 'affiliate_url'];
 const missingHeaders = REQUIRED.filter(header => !headers.includes(header));
 if (missingHeaders.length) {
@@ -39,12 +44,13 @@ const settings = app.container.resolve('settings').settings;
 const results = [];
 let created = 0;
 
-for (let index = 1; index < lines.length; index += 1) {
-  const cells = parseCsvLine(lines[index]);
+for (let index = 1; index < rows.length; index += 1) {
+  const cells = rows[index];
   const row = Object.fromEntries(headers.map((header, position) => [header, cells[position] ?? '']));
   const rowNumber = index + 1;
 
   try {
+    if (cells.length > headers.length) throw new Error('La fila contiene más columnas que el encabezado.');
     if (!row.name || !row.merchant_id || !row.program_id || !row.affiliate_url) {
       throw new Error('Nombre, merchant_id, program_id y affiliate_url son obligatorios.');
     }
@@ -93,7 +99,7 @@ for (let index = 1; index < lines.length; index += 1) {
         source: 'import_csv',
         updatedAt: priceValue === null ? null : now(),
       },
-      metadata: { importedFrom: filePath, importedAt: now() },
+      metadata: { importedFrom: basename(filePath), importedAt: now() },
     });
 
     const link = await affiliate.links.create({

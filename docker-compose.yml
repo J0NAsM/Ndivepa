@@ -6,6 +6,10 @@ services:
     environment:
       NODE_ENV: production
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:4300}
+      # En producción la aplicación se niega a arrancar sin una contraseña propia
+      # para la primera cuenta administradora: no inventa ninguna por defecto.
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:?define INITIAL_ADMIN_EMAIL}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?define INITIAL_ADMIN_PASSWORD}
     volumes:
       - ndivepa-data:/app/data
       - ndivepa-exports:/app/exports

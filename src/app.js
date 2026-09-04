@@ -14,7 +14,7 @@
  *   /...                    estáticos de `public/`
  */
 import { createServer } from 'node:http';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig, redactConfig, StrategyRegistry } from './framework/config.js';
@@ -48,6 +48,7 @@ import { AuditService } from './modules/base.js';
 import { legacyRoutes, redirectRoute } from './api/legacy/index.js';
 import { seoRoutes } from './api/seo/index.js';
 import { SPANISH_MESSAGES } from './i18n/es.js';
+import { seedDemoCatalog } from './demo-seed.js';
 
 import settingsModule from './modules/settings/index.js';
 import geographyModule from './modules/geography/index.js';
@@ -113,10 +114,15 @@ export async function createApp({ env = process.env, plugins = [], seed = null }
   const logger = createLogger({ level: config.log.level, pretty: config.log.pretty });
 
   // --- Persistencia -----------------------------------------------------------
+  const dataDir = config.storage.dataDir ? resolvePath(config.storage.dataDir) : join(root, 'data');
+  const snapshotDir = config.storage.snapshotDir
+    ? resolvePath(config.storage.snapshotDir)
+    : join(config.storage.dataDir ? dataDir : join(root, 'backups'), 'snapshots');
   const store = new Store({
-    file: join(root, 'data', 'db.json'),
-    snapshotDir: join(root, 'backups', 'snapshots'),
+    file: join(dataDir, 'db.json'),
+    snapshotDir,
     snapshotKeep: config.storage.snapshotKeep,
+    pretty: config.storage.pretty,
     logger,
   });
   registerMigrations(store);
@@ -139,6 +145,8 @@ export async function createApp({ env = process.env, plugins = [], seed = null }
   const search = new SearchIndex({ logger });
   const files = new FileService({
     provider: new LocalFileProvider({ directory: join(root, 'public', 'uploads'), publicPath: '/uploads' }),
+    allowed: ['image/png', 'image/jpeg', 'image/webp'],
+    maxBytes: config.security.maxUploadBytes,
     logger,
   });
   const notifications = new NotificationService({ store, logger });
@@ -228,18 +236,10 @@ export async function createApp({ env = process.env, plugins = [], seed = null }
   jobs.schedule('framework.prune', { everyMs: 10 * 60_000 });
 
   // --- Semilla ----------------------------------------------------------------
-  if (seed ?? config.seed.enabled) {
-    for (const name of container.bootOrder) {
-      const module = container.modules.get(name);
-      if (typeof module.seed !== 'function') continue;
-      try {
-        await module.seed(container.resolve(name), container);
-      } catch (error) {
-        logger.error('Fallo al sembrar un módulo', { module: name, error: error.message });
-      }
-    }
-    await ensureAdminAccount(container, logger);
-  }
+  // Se expone como función para poder sembrar después del arranque (`scripts/seed.js`),
+  // sin necesidad de construir la aplicación dos veces sobre el mismo documento.
+  const runSeed = () => seedApplication({ container, config, logger });
+  if (seed ?? config.seed.enabled) await runSeed();
 
   // El índice de búsqueda se construye al arrancar, no en la primera petición.
   if (config.features.search) container.resolve('catalog').products.reindex();
@@ -248,8 +248,32 @@ export async function createApp({ env = process.env, plugins = [], seed = null }
     config, logger, store, container, events, jobs, cache, locks, workflows,
     permissions, rbac, i18n, translations, customFields, search, files,
     notifications, analyticsProvider, webhooks, rateLimiter, strategies, audit,
-    routeCollections,
+    routeCollections, seed: runSeed,
   };
+}
+
+/**
+ * Siembra en el orden de arranque: datos base por módulo, cuenta administradora
+ * y, si la instalación lo permite, el catálogo afiliado de demostración.
+ */
+async function seedApplication({ container, config, logger }) {
+  for (const name of container.bootOrder) {
+    const module = container.modules.get(name);
+    if (typeof module.seed !== 'function') continue;
+    try {
+      await module.seed(container.resolve(name), container);
+    } catch (error) {
+      // Un módulo que no puede sembrar es un defecto, no un aviso: dejarlo pasar
+      // en silencio producía el arranque a medias que dejaba el catálogo vacío.
+      logger.error('Fallo al sembrar un módulo', { module: name, error: error.message });
+      throw error;
+    }
+  }
+  await ensureAdminAccount(container, logger);
+  if (!config.seed.demo) return { demo: { seeded: false, reason: 'SEED_DEMO desactivado' } };
+  const demo = await seedDemoCatalog(container, logger);
+  if (!demo.seeded) logger.debug('Sin catálogo de demostración', { reason: demo.reason });
+  return { demo };
 }
 
 /**
@@ -274,6 +298,42 @@ async function ensureAdminAccount(container, logger) {
   });
   logger.warn('Cuenta administradora inicial creada. Cambia la contraseña antes de publicar.', { email: created.email });
   return created;
+}
+
+/**
+ * Superficie GraphQL: lectura pública y resumen administrativo autenticado.
+ *
+ * `csrf: false` es deliberado y seguro aquí: ninguna de las dos operaciones
+ * escribe, y el esquema no expone mutaciones.
+ */
+const GRAPHQL_BODY = {
+  query: { type: 'string', required: true, maxLength: 20_000 },
+  variables: { type: 'object', shape: {}, allowUnknown: true },
+  operationName: { type: 'string', maxLength: 120 },
+};
+
+function mountGraphql(router, container) {
+  router.add({
+    method: 'POST',
+    path: '/api/graphql',
+    permission: null,
+    csrf: false,
+    summary: 'API GraphQL de lectura para catálogo y configuración pública.',
+    tags: ['graphql'],
+    body: GRAPHQL_BODY,
+    handler: async ctx => executeGraphql({ container, context: ctx, ...ctx.body }),
+  });
+  router.add({
+    method: 'POST',
+    path: '/api/v1/admin/graphql',
+    permission: 'settings:read',
+    csrf: false,
+    summary: 'API GraphQL administrativa autenticada.',
+    tags: ['graphql', 'operación'],
+    body: GRAPHQL_BODY,
+    handler: async ctx => executeGraphql({ container, context: ctx, ...ctx.body }),
+  });
+  return router;
 }
 
 /** Monta todos los routers y devuelve el `HttpApp` listo para `createServer`. */
@@ -340,27 +400,11 @@ export function buildHttpApp(app) {
   router.merge(legacy).merge(admin).merge(storeApi).merge(roots);
 
   // Documentación generada desde las rutas ya registradas.
+  // GraphQL solo se monta si la instalación lo declara. Antes el interruptor
+  // `FEATURE_GRAPHQL` existía en la configuración pero no lo consultaba nadie:
+  // apagarlo no apagaba nada.
+  if (config.features.graphql) mountGraphql(router, container);
   const spec = buildOpenApi({ router, config, version: '0.2.0' });
-  router.add({
-    method: 'POST',
-    path: '/api/graphql',
-    permission: null,
-    csrf: false,
-    summary: 'API GraphQL de lectura para catálogo y configuración pública.',
-    tags: ['graphql'],
-    body: { query: { type: 'string', required: true, maxLength: 20_000 }, variables: { type: 'object', shape: {}, allowUnknown: true }, operationName: { type: 'string', maxLength: 120 } },
-    handler: async ctx => executeGraphql({ container, context: ctx, ...ctx.body }),
-  });
-  router.add({
-    method: 'POST',
-    path: '/api/v1/admin/graphql',
-    permission: 'settings:read',
-    csrf: false,
-    summary: 'API GraphQL administrativa autenticada.',
-    tags: ['graphql', 'operación'],
-    body: { query: { type: 'string', required: true, maxLength: 20_000 }, variables: { type: 'object', shape: {}, allowUnknown: true }, operationName: { type: 'string', maxLength: 120 } },
-    handler: async ctx => executeGraphql({ container, context: ctx, ...ctx.body }),
-  });
   router.add({
     method: 'GET',
     path: '/api/openapi.json',
@@ -462,7 +506,19 @@ export async function start({ env = process.env, plugins = [] } = {}) {
   const { httpApp, router, spec } = buildHttpApp(app);
 
   const server = createServer(httpApp.handler());
-  await new Promise(resolve => server.listen(app.config.port, resolve));
+  server.requestTimeout = app.config.http.requestTimeoutMs;
+  server.headersTimeout = app.config.http.headersTimeoutMs;
+  server.keepAliveTimeout = app.config.http.keepAliveTimeoutMs;
+  // Evita retener conexiones lentas indefinidamente después de la respuesta.
+  server.maxRequestsPerSocket = 1_000;
+  await new Promise((resolve, reject) => {
+    const onError = error => reject(error);
+    server.once('error', onError);
+    server.listen({ port: app.config.port, host: app.config.host }, () => {
+      server.off('error', onError);
+      resolve();
+    });
+  });
   app.jobs.start();
 
   app.logger.info('Ndivepa disponible', {
@@ -476,7 +532,12 @@ export async function start({ env = process.env, plugins = [] } = {}) {
 
   const shutdown = async () => {
     app.jobs.stop();
-    await new Promise(resolve => server.close(resolve));
+    const force = setTimeout(() => server.closeAllConnections?.(), app.config.http.shutdownGraceMs);
+    force.unref?.();
+    // Las conexiones keep-alive ociosas no deben retrasar un despliegue.
+    server.closeIdleConnections?.();
+    await new Promise((resolve, reject) => server.close(error => (error ? reject(error) : resolve())));
+    clearTimeout(force);
     await app.store.flush();
     await app.container.shutdown();
   };

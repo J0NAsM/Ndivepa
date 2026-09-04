@@ -3,7 +3,7 @@
 ## Iniciar
 
 ```powershell
-cd D:\Proyectos\MarketingdeAfiliados\Ndivepa
+cd <carpeta-del-repositorio>
 npm run dev
 ```
 

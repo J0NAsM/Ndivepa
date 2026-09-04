@@ -70,14 +70,14 @@ export class TrackingService {
   /** Registro de vista de producto. Devuelve `null` si no hay consentimiento. */
   async trackView({ productId, variantId = null, sessionId, source, medium, page, referrer, userAgent, locale, channelId, consent }) {
     const product = this.catalog.products.repository.byId(productId);
-    if (!product) throw new NotFoundError('producto', productId);
+    if (!product || product.status !== 'published') throw new NotFoundError('producto', productId);
 
     const event = await this.analytics.track({
       type: 'product_view',
       consent,
       productId,
       variantId,
-      sessionId,
+      sessionId: safeTrackingId(sessionId),
       channelId,
       source: detectSource(referrer, source),
       medium,
@@ -112,6 +112,10 @@ export class TrackingService {
     if (!link || link.status === 'invalid' || !link.active) return null;
 
     const product = this.catalog.products.repository.byId(link.productId);
+    // Un enlace huérfano, borrado o de un borrador nunca funciona como redirección
+    // pública, incluso si alguien conservó la URL `/go/...`.
+    if (!product || product.status !== 'published') return null;
+    sessionId = safeTrackingId(sessionId);
     const program = link.programId ? this.store.collection('programs').find(row => row.id === link.programId) : null;
 
     // Sin consentimiento se redirige igual, pero no se registra el evento.
@@ -164,6 +168,11 @@ export class TrackingService {
 
     return { destination: link.affiliateUrl, clickId, tracked: true };
   }
+}
+
+function safeTrackingId(value) {
+  const candidate = String(value || '').trim().slice(0, 80);
+  return /^[A-Za-z0-9._:-]{1,80}$/.test(candidate) ? candidate : generateId('visitor');
 }
 
 export class AnalyticsReportService {

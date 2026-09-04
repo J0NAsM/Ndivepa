@@ -1,5 +1,17 @@
+# Dependencias
 node_modules/
-data/db.json
-data/*.corrupto
+
+# Datos locales: el documento se recrea al arrancar, nunca se versiona.
+data/*
+!data/.gitkeep
+
+# Copias de seguridad y snapshots previos a migración.
 backups/*
 !backups/.gitkeep
+
+# Salidas de los scripts de operación.
+exports/
+
+# Registro del lanzador de Windows.
+arranque.log
+arranque.log.error

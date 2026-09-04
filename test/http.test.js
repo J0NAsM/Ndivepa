@@ -1,14 +1,23 @@
 import assert from 'node:assert/strict';
 import test, { after, before } from 'node:test';
 import { spawn } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const port = 4397;
 const origin = `http://127.0.0.1:${port}`;
 let server;
 let adminSession;
-const databaseUrl = new URL('../data/db.json', import.meta.url);
-let originalDatabase;
+
+// La suite arranca con su propio `DATA_DIR` en una carpeta temporal.
+//
+// Antes leía y restauraba `data/db.json` del repositorio: en una instalación
+// nueva ese fichero no existe y el `before` fallaba, tumbando las veinte
+// pruebas; y cuando existía, la suite escribía sobre los datos reales de quien
+// estuviera desarrollando. Con una carpeta propia el arranque en frío es parte
+// de lo que se prueba: migraciones, semilla y catálogo de demostración incluidos.
+let dataDir;
 
 async function waitForServer() {
   let lastError;
@@ -53,12 +62,28 @@ async function login() {
 }
 
 before(async () => {
-  originalDatabase = await readFile(databaseUrl);
-  server = spawn(process.execPath, ['server.js'], { cwd: process.cwd(), env: { ...process.env, PORT: String(port), PUBLIC_BASE_URL: origin }, stdio: 'ignore' });
+  dataDir = await mkdtemp(join(tmpdir(), 'ndivepa-test-'));
+  server = spawn(process.execPath, ['server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      PUBLIC_BASE_URL: origin,
+      DATA_DIR: dataDir,
+      SNAPSHOT_DIR: join(dataDir, 'snapshots'),
+      // Los trabajos periódicos no aportan nada a las pruebas HTTP y su tick
+      // introduce escrituras que no controla ninguna prueba.
+      JOBS_ENABLED: 'false',
+    },
+    stdio: 'ignore',
+  });
   await waitForServer();
 });
 
-after(async () => { if (server && !server.killed) server.kill(); await writeFile(databaseUrl, originalDatabase); });
+after(async () => {
+  if (server && !server.killed) server.kill();
+  if (dataDir) await rm(dataDir, { recursive: true, force: true }).catch(() => {});
+});
 
 test('expone catálogo público con cabeceras de seguridad', async () => {
   const response = await fetch(`${origin}/api/products`);
@@ -106,6 +131,16 @@ test('muestra el estado de conectores sin exponer secretos', async () => {
   assert.equal(response.status, 200);
   assert.equal(integrations.payment.configured, false);
   assert.equal('apiKey' in integrations.payment, false);
+});
+
+test('protege el descubrimiento de oportunidades como función administrativa', async () => {
+  const response = await fetch(`${origin}/api/v1/admin/affiliate-opportunities`);
+  assert.equal(response.status, 401);
+  const session = await login();
+  const invalidGeo = await fetch(`${origin}/api/v1/admin/affiliate-opportunities?geo=Paraguay`, { headers: { cookie: session.cookie } });
+  assert.equal(invalidGeo.status, 422);
+  const invalidLimit = await fetch(`${origin}/api/v1/admin/affiliate-opportunities?limit=101`, { headers: { cookie: session.cookie } });
+  assert.equal(invalidLimit.status, 422);
 });
 
 test('protege los eventos administrativos y permite al administrador autenticado', async () => {
@@ -181,7 +216,7 @@ test('ofrece el aviso técnico de privacidad sin indexarlo', async () => {
   const response = await fetch(`${origin}/privacidad.html`);
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /name="robots" content="noindex"/);
+  assert.match(html, /name="robots" content="noindex,nofollow"/);
   assert.match(html, /Revisión antes de publicar/);
 });
 
@@ -278,4 +313,56 @@ test('limita intentos repetidos de inicio de sesión', async () => {
 test('rechaza de forma segura enlaces de redirección desconocidos', async () => {
   const response = await fetch(`${origin}/go/enlace-inexistente`, { redirect: 'manual' });
   assert.equal(response.status, 404);
+});
+
+test('el catálogo de demostración cumple las reglas de publicación afiliada', async () => {
+  const session = await login();
+  const products = await (await fetch(`${origin}/api/products`)).json();
+  assert.ok(products.length >= 4, 'la demo publica varios productos');
+
+  const links = await (await fetch(`${origin}/api/admin/links`, { headers: { cookie: session.cookie } })).json();
+  assert.equal(links.filter(link => link.status === 'invalid').length, 0, 'ningún enlace sembrado es inválido');
+
+  // La regla del dominio: un producto afiliado publicado necesita un enlace usable.
+  for (const product of products) {
+    const own = links.filter(link => link.productId === product.id);
+    assert.ok(own.length, `${product.name} se publicó sin ningún enlace`);
+    assert.ok(own.some(link => link.status === 'valid' || link.status === 'warning'), `${product.name} solo tiene enlaces inválidos`);
+  }
+});
+
+test('el resumen separa la venta atribuida de la comisión y de lo cobrado', async () => {
+  const session = await login();
+  const summary = await (await fetch(`${origin}/api/affiliate-summary`, { headers: { cookie: session.cookie } })).json();
+
+  assert.ok(summary.productViews > 0, 'la demo registra vistas');
+  assert.ok(summary.affiliateClicks > 0, 'la demo registra clics');
+  assert.ok(summary.ctr > 0, 'con vistas y clics el CTR no puede ser cero');
+  // La regla de negocio del proyecto: una venta atribuida no es ingreso propio.
+  assert.ok('attributedSales' in summary.revenueSeparation);
+  assert.ok('ownIncomeConfirmed' in summary.revenueSeparation);
+  assert.ok('pendingNotIncome' in summary.revenueSeparation);
+  assert.notEqual(summary.revenueSeparation.attributedSales, summary.revenueSeparation.ownIncomeConfirmed);
+});
+
+test('una comisión aprobada lleva importe estimado, no cero', async () => {
+  const session = await login();
+  const commissions = await (await fetch(`${origin}/api/admin/commissions`, { headers: { cookie: session.cookie } })).json();
+  assert.ok(commissions.length, 'la demo aprueba al menos una conversión');
+  // Regresión: `approve()` usaba `conversion.commission || 0` y nadie rellenaba
+  // ese campo, así que toda comisión nacía con importe cero.
+  assert.ok(commissions.every(commission => Number(commission.amount) > 0));
+});
+
+test('no devuelve un identificador de correlación inseguro propuesto por el cliente', async () => {
+  // Valor legal como cabecera HTTP pero inaceptable como identificador: si se
+  // devolviera tal cual, un valor con caracteres de control sería inyección.
+  const injected = 'valor con espacios y <etiquetas>';
+  const response = await fetch(`${origin}/api/products`, { headers: { 'X-Request-Id': 'valido-123' } });
+  assert.equal(response.headers.get('x-request-id'), 'valido-123');
+
+  const rejected = await fetch(`${origin}/api/products`, { headers: { 'X-Request-Id': injected } });
+  const returned = rejected.headers.get('x-request-id') || '';
+  assert.notEqual(returned, injected);
+  assert.match(returned, /^[A-Za-z0-9._-]+$/);
 });

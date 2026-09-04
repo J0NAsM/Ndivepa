@@ -10,8 +10,17 @@ import { ConflictError, NotFoundError, ValidationError } from './errors.js';
 import { id as generateId } from './ids.js';
 import { now } from './dates.js';
 
+const BLOCKED_PATH_PARTS = new Set(['__proto__', 'prototype', 'constructor']);
+
+/** Solo admite rutas de propiedades simples; evita proyección/prototype pollution. */
+export function isSafePath(path) {
+  const parts = String(path ?? '').split('.');
+  return parts.length > 0 && parts.every(part => /^[A-Za-z][A-Za-z0-9_]*$/.test(part) && !BLOCKED_PATH_PARTS.has(part));
+}
+
 /** Lee `a.b.c` sobre un objeto anidado (M-0066). */
 export function getPath(source, path) {
+  if (!isSafePath(path)) return undefined;
   if (!path.includes('.')) return source?.[path];
   return path.split('.').reduce((value, key) => (value === null || value === undefined ? undefined : value[key]), source);
 }
@@ -42,10 +51,12 @@ export function matches(record, filter) {
   if (!filter || typeof filter !== 'object') return true;
   for (const [key, expected] of Object.entries(filter)) {
     if (key === '$and') {
+      if (!Array.isArray(expected)) throw ValidationError.single(key, 'El operador lógico requiere una lista de filtros.');
       if (!expected.every(inner => matches(record, inner))) return false;
       continue;
     }
     if (key === '$or') {
+      if (!Array.isArray(expected)) throw ValidationError.single(key, 'El operador lógico requiere una lista de filtros.');
       if (!expected.some(inner => matches(record, inner))) return false;
       continue;
     }
@@ -54,6 +65,7 @@ export function matches(record, filter) {
       continue;
     }
     const value = getPath(record, key);
+    if (!isSafePath(key)) throw ValidationError.single(key, 'Ruta de campo no permitida.');
     if (expected !== null && typeof expected === 'object' && !Array.isArray(expected)) {
       for (const [operator, operand] of Object.entries(expected)) {
         const check = OPERATORS[operator];
@@ -86,7 +98,8 @@ export function comparator(order) {
       if (right === null || right === undefined) return -1;
       return left > right ? sign : -sign;
     }
-    return 0;
+    // Desempate estable: la paginación no cambia si dos valores ordenados son iguales.
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
   };
 }
 
@@ -95,6 +108,7 @@ export function project(record, fields) {
   if (!fields?.length) return record;
   const output = {};
   for (const field of fields) {
+    if (!isSafePath(field)) throw ValidationError.single('fields', `Campo no permitido: ${field}.`);
     const value = getPath(record, field);
     if (value !== undefined) {
       if (field.includes('.')) {
@@ -175,7 +189,8 @@ export class Repository {
     // Paginación por cursor: estable aunque se inserten registros nuevos (M-0069).
     if (after) {
       const position = rows.findIndex(row => row.id === after);
-      rows = position >= 0 ? rows.slice(position + 1) : rows;
+      if (position < 0) throw ValidationError.single('after', 'El cursor no existe en este conjunto de resultados.');
+      rows = rows.slice(position + 1);
     }
 
     const count = rows.length;
@@ -291,7 +306,10 @@ export class Repository {
         );
       }
       if (reference.onDelete === 'null') {
-        for (const row of dependents) row[reference.field] = null;
+        for (const row of dependents) {
+          setPath(row, reference.field, null);
+          row.updatedAt = now();
+        }
       }
     }
 
@@ -309,7 +327,10 @@ export class Repository {
     const rows = this.raw(state);
     const position = rows.findIndex(row => row.id === identifier);
     if (position < 0) throw new NotFoundError(this.collection, identifier);
-    rows[position] = { ...rows[position], deletedAt: null, updatedAt: now() };
+    if (!rows[position].deletedAt) throw new ConflictError(`El registro ${identifier} no está borrado.`);
+    const restored = { ...rows[position], deletedAt: null, updatedAt: now() };
+    this.assertUnique(state, restored, identifier);
+    rows[position] = restored;
     this.indexVersion = null;
     return rows[position];
   }
@@ -320,4 +341,15 @@ export class Repository {
     if (!existing) return this.insert(state, data);
     return this.patch(state, existing.id, data).after;
   }
+}
+
+function setPath(target, path, value) {
+  if (!isSafePath(path)) throw ValidationError.single(path, 'Ruta de campo no permitida.');
+  const parts = path.split('.');
+  let cursor = target;
+  for (const part of parts.slice(0, -1)) {
+    if (!cursor[part] || typeof cursor[part] !== 'object' || Array.isArray(cursor[part])) cursor[part] = {};
+    cursor = cursor[part];
+  }
+  cursor[parts.at(-1)] = value;
 }

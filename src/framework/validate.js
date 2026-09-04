@@ -13,6 +13,33 @@ const CURRENCY = /^[A-Z]{3}$/;
 const COUNTRY = /^[A-Za-z]{2}$/;
 const HANDLE = /^[a-z0-9][a-z0-9-]*$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
+function cloneExtensibleObject(value, path, issues) {
+  if (Array.isArray(value)) return value.map((item, index) => cloneExtensibleObject(item, `${path}[${index}]`, issues));
+  if (!value || typeof value !== 'object') return value;
+  const output = {};
+  for (const [key, inner] of Object.entries(value)) {
+    const field = path ? `${path}.${key}` : key;
+    if (UNSAFE_OBJECT_KEYS.has(key)) {
+      issues.push({ field, message: 'Clave de objeto no permitida.' });
+      continue;
+    }
+    output[key] = cloneExtensibleObject(inner, field, issues);
+  }
+  return output;
+}
+
+function isRealIsoDate(value) {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!parts) return false;
+  const [, year, month, day] = parts.map(Number);
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) return false;
+  const parsed = new Date(value.length === 10 ? `${value}T00:00:00Z` : value);
+  return !Number.isNaN(parsed.getTime());
+}
 
 const TYPE_CHECKS = {
   string: value => typeof value === 'string',
@@ -33,8 +60,11 @@ function coerce(value, rule) {
       return Number.isFinite(numeric) ? numeric : value;
     }
     case 'integer': {
-      const numeric = Number.parseInt(value, 10);
-      return Number.isFinite(numeric) ? numeric : value;
+      // `parseInt('12px')` y `parseInt('1.9')` aceptaban valores parciales.
+      if (typeof value === 'number') return value;
+      if (!/^-?\d+$/.test(String(value).trim())) return value;
+      const numeric = Number(value);
+      return Number.isSafeInteger(numeric) ? numeric : value;
     }
     case 'boolean': {
       if (value === 'true' || value === '1' || value === 1) return true;
@@ -56,11 +86,16 @@ function checkFormat(value, format) {
     case 'currency': return CURRENCY.test(value) ? null : 'Debe ser un código de moneda ISO-4217 de tres letras.';
     case 'country': return COUNTRY.test(value) ? null : 'Debe ser un código de país ISO-3166 de dos letras.';
     case 'handle': return HANDLE.test(value) ? null : 'Solo minúsculas, números y guiones, empezando por letra o número.';
-    case 'date': return ISO_DATE.test(value) ? null : 'Debe ser una fecha ISO-8601.';
+    case 'date': {
+      if (!ISO_DATE.test(value)) return 'Debe ser una fecha ISO-8601.';
+      return isRealIsoDate(value) ? null : 'Debe ser una fecha ISO-8601 real.';
+    }
     case 'url':
       try {
         const url = new URL(value);
-        return ['http:', 'https:'].includes(url.protocol) ? null : 'Solo se admiten URLs http o https.';
+        if (!['http:', 'https:'].includes(url.protocol)) return 'Solo se admiten URLs http o https.';
+        if (url.username || url.password) return 'La URL no puede incluir credenciales.';
+        return null;
       } catch {
         return 'Debe ser una URL válida.';
       }
@@ -74,7 +109,7 @@ function validateValue(value, rule, path, issues) {
 
   if (value === null || value === undefined || value === '') {
     if (rule.required) fail(rule.requiredMessage || 'Este campo es obligatorio.');
-    return rule.default !== undefined && (value === undefined || value === '') ? rule.default : value;
+    return rule.default !== undefined && (value === undefined || value === '') ? structuredClone(rule.default) : value;
   }
 
   const type = rule.type || 'any';
@@ -83,18 +118,22 @@ function validateValue(value, rule, path, issues) {
     fail(`Se esperaba un valor de tipo ${type}.`);
     return value;
   }
+  if (!check) throw new TypeError(`Tipo de validación no soportado: ${type}.`);
 
   if (type === 'string') {
     if (rule.trim !== false) value = value.trim();
+    if (rule.lowercase) value = value.toLowerCase();
+    if (rule.uppercase) value = value.toUpperCase();
     if (rule.minLength && value.length < rule.minLength) fail(`Debe tener al menos ${rule.minLength} caracteres.`);
     if (rule.maxLength && value.length > rule.maxLength) fail(`No puede superar ${rule.maxLength} caracteres.`);
-    if (rule.pattern && !rule.pattern.test(value)) fail(rule.patternMessage || 'El formato no es válido.');
+    if (rule.pattern) {
+      rule.pattern.lastIndex = 0;
+      if (!rule.pattern.test(value)) fail(rule.patternMessage || 'El formato no es válido.');
+    }
     if (rule.format) {
       const problem = checkFormat(value, rule.format);
       if (problem) fail(problem);
     }
-    if (rule.lowercase) value = value.toLowerCase();
-    if (rule.uppercase) value = value.toUpperCase();
   }
 
   if (type === 'number' || type === 'integer') {
@@ -111,6 +150,9 @@ function validateValue(value, rule, path, issues) {
     if (rule.maxItems && value.length > rule.maxItems) fail(`No puede incluir más de ${rule.maxItems} elemento(s).`);
     if (rule.items) {
       value = value.map((item, index) => validateValue(item, rule.items, `${path}[${index}]`, issues));
+    }
+    if (rule.unique && new Set(value.map(item => JSON.stringify(item))).size !== value.length) {
+      fail('No puede contener valores duplicados.');
     }
   }
 
@@ -133,7 +175,11 @@ function validateValue(value, rule, path, issues) {
 
 function runSchema(input, schema, { path = '', issues, partial = false, allowUnknown = false } = {}) {
   const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-  const output = {};
+  // `allowUnknown` se usa para metadatos y mapas de opciones. Antes se limitaba
+  // a no reportar las claves, pero luego devolvía `{}` y destruía silenciosamente
+  // todo el contenido. Se conserva una copia propia, rechazando claves que puedan
+  // alterar prototipos cuando esos objetos se combinen más adelante.
+  const output = allowUnknown ? cloneExtensibleObject(source, path, issues) : {};
 
   if (!allowUnknown) {
     for (const key of Object.keys(source)) {
@@ -178,7 +224,7 @@ export function check(input, schema, options = {}) {
 
 /** Atajos de regla para no repetir literales por todo el código. */
 export const rule = {
-  id: (extra = {}) => ({ type: 'string', maxLength: 80, ...extra }),
+  id: (extra = {}) => ({ type: 'string', maxLength: 80, pattern: SAFE_ID, patternMessage: 'Debe ser un identificador válido.', ...extra }),
   text: (max = 255, extra = {}) => ({ type: 'string', maxLength: max, ...extra }),
   longText: (extra = {}) => ({ type: 'string', maxLength: 20000, ...extra }),
   handle: (extra = {}) => ({ type: 'string', maxLength: 120, format: 'handle', ...extra }),
@@ -192,7 +238,7 @@ export const rule = {
   percent: (extra = {}) => ({ type: 'number', coerce: true, min: 0, max: 100, ...extra }),
   flag: (extra = {}) => ({ type: 'boolean', coerce: true, ...extra }),
   enumOf: (values, extra = {}) => ({ type: 'string', enum: values, ...extra }),
-  list: (items, extra = {}) => ({ type: 'array', coerce: true, items, ...extra }),
+  list: (items, extra = {}) => ({ type: 'array', coerce: true, items, unique: true, ...extra }),
   metadata: () => ({ type: 'object', shape: {}, allowUnknown: true, validate: value => (
     value && typeof value === 'object' && !Array.isArray(value) ? null : 'Los metadatos deben ser un objeto.'
   ) }),

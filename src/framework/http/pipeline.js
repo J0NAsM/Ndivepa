@@ -4,13 +4,13 @@
  * Reemplazo directo del monkey-patch de `Server.prototype.emit`. El orden es
  * explícito y se lee de arriba abajo:
  *
- *   cabeceras -> cors -> preflight -> límite de tamaño -> rate limit ->
- *   contexto -> autenticación -> ruta -> CSRF -> permiso -> cuerpo -> manejador
+ *   cabeceras -> cors -> preflight -> límite de tamaño -> contexto ->
+ *   autenticación -> rate limit -> ruta -> cuerpo -> CSRF -> permiso -> manejador
  *
  * Lo que no coincide con ninguna ruta cae en los `fallbacks` (SEO server-side y
  * estáticos), en el mismo orden en que se registraron.
  */
-import { MethodNotAllowedError, NotFoundError, PayloadTooLargeError, UnauthorizedError } from '../errors.js';
+import { BadRequestError, MethodNotAllowedError, NotFoundError, PayloadTooLargeError, UnauthorizedError } from '../errors.js';
 import { RequestContext, readJsonBody } from './context.js';
 import { applyCors, assertCsrf, decorateWriteHead, enforceRateLimit, securityHeaders } from './middlewares.js';
 import * as respond from './respond.js';
@@ -81,38 +81,55 @@ export class HttpApp {
 
   async handle(req, res) {
     this.stats.requests += 1;
-    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-    const ctx = new RequestContext({
-      req,
-      res,
-      url,
-      config: this.config,
-      container: this.container,
-      logger: this.logger,
-      i18n: this.i18n,
-    });
-
     securityHeaders(res, { isProduction: this.config.isProduction });
-    decorateWriteHead(req, res, { isProduction: this.config.isProduction, requestId: ctx.requestId });
-    applyCors(req, res, { origins: this.config.security.corsOrigins });
-
+    let url = null;
+    let ctx = null;
     try {
+      const rawUrl = req.url || '/';
+      if (rawUrl.length > this.config.security.maxUrlLength) {
+        throw new BadRequestError(`La URL supera el máximo de ${this.config.security.maxUrlLength} caracteres.`);
+      }
+      // El Host del cliente no forma parte de la resolución interna. Usarlo como
+      // base hacía que una cabecera Host malformada pudiera tumbar la petición.
+      url = new URL(rawUrl, 'http://localhost');
+      ctx = new RequestContext({
+        req,
+        res,
+        url,
+        config: this.config,
+        container: this.container,
+        logger: this.logger,
+        i18n: this.i18n,
+      });
+      decorateWriteHead(req, res, { isProduction: this.config.isProduction, requestId: ctx.requestId });
+      applyCors(req, res, { origins: this.config.security.corsOrigins });
+
       if (ctx.method === 'OPTIONS') {
         const allowed = this.router.allowedFor(url.pathname);
-        res.writeHead(204, { Allow: allowed.length ? allowed.join(', ') : 'GET, HEAD, OPTIONS' });
+        if (!allowed.length) throw new NotFoundError('ruta', url.pathname);
+        const requested = String(req.headers['access-control-request-method'] || '').toUpperCase();
+        if (requested && !allowed.includes(requested)) throw new MethodNotAllowedError(allowed);
+        res.writeHead(204, { Allow: allowed.join(', '), 'Content-Length': '0' });
         res.end();
         return;
       }
 
-      if (Number(req.headers['content-length'] || 0) > this.config.security.maxBodyBytes) {
+      const lengthHeader = req.headers['content-length'];
+      const declaredLength = lengthHeader === undefined ? 0 : Number(lengthHeader);
+      if (!Number.isSafeInteger(declaredLength) || declaredLength < 0) throw new BadRequestError('Content-Length no es válido.');
+      if (declaredLength > this.config.security.maxBodyBytes) {
         return respond.fail(res, new PayloadTooLargeError(this.config.security.maxBodyBytes));
       }
+
+      // La autenticación va **antes** del rate limit a propósito. Las reglas de
+      // escritura se cuentan por actor (`write:<userId>`) y al revés `ctx.actor`
+      // siempre era `null`: todo el panel compartía el cupo de una sola IP, y dos
+      // administradores detrás del mismo NAT se bloqueaban entre ellos.
+      await this.authenticate(ctx);
 
       for (const entry of this.rateRules) {
         if (entry.test(ctx)) enforceRateLimit(this.rateLimiter, entry.keyOf(ctx), entry.limit, res);
       }
-
-      await this.authenticate(ctx);
 
       let resolved;
       try {
@@ -122,7 +139,7 @@ export class HttpApp {
         throw error;
       }
 
-      const { route, params, headOnly } = resolved;
+      const { route, params } = resolved;
       ctx.params = params;
       ctx.route = route;
 
@@ -153,7 +170,6 @@ export class HttpApp {
       // Si el manejador ya escribió (redirección, HTML, fichero), no se toca la respuesta.
       if (res.writableEnded || res.headersSent) return;
       if (result === undefined || result === null) return respond.noContent(res);
-      if (headOnly) return respond.json(res, 200, {});
       if (result && typeof result === 'object' && Array.isArray(result.data) && 'count' in result) {
         return respond.list(res, result);
       }
@@ -161,8 +177,8 @@ export class HttpApp {
     } catch (error) {
       this.stats.errors += 1;
       const status = error?.status || 500;
-      if (status >= 500) this.logger?.error('Error atendiendo la petición', { path: url.pathname, error: error.message });
-      else this.logger?.debug('Petición rechazada', { path: url.pathname, code: error.code, status });
+      if (status >= 500) this.logger?.error('Error atendiendo la petición', { path: url?.pathname || req.url, error: error.message });
+      else this.logger?.debug('Petición rechazada', { path: url?.pathname || req.url, code: error.code, status });
       if (res.headersSent) return;
       return respond.fail(res, error, { exposeInternals: !this.config.isProduction });
     }

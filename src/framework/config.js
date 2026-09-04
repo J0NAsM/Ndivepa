@@ -10,13 +10,20 @@ import { NdivepaError } from './errors.js';
 const SECRET_KEYS = /(secret|password|token|key|salt|hash|credential)/i;
 
 function readNumber(value, fallback) {
+  if (value === undefined || value === '') return fallback;
   const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
+  // Un valor escrito pero inválido no debe degradarse silenciosamente al valor
+  // por defecto: se conserva como NaN para que `validateConfig` detenga el arranque.
+  return Number.isFinite(numeric) ? numeric : Number.NaN;
 }
 
 function readBoolean(value, fallback) {
   if (value === undefined || value === '') return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  // Igual que con los números, un typo (`treu`) es configuración inválida.
+  return null;
 }
 
 function readList(value, fallback) {
@@ -33,19 +40,23 @@ export function loadConfig(env = process.env) {
     nodeEnv,
     isProduction,
     port: readNumber(env.PORT, 4300),
-    host: env.HOST || '0.0.0.0',
+    host: String(env.HOST || '0.0.0.0').trim(),
     publicBaseUrl: String(env.PUBLIC_BASE_URL || '').replace(/\/+$/, ''),
     defaultLocale: env.DEFAULT_LOCALE || 'es',
     supportedLocales: readList(env.SUPPORTED_LOCALES, ['es', 'en', 'pt']),
     timezone: env.TZ_DISPLAY || 'America/Asuncion',
 
     // El modo por defecto sigue siendo afiliado: el comercio directo se enciende a mano.
-    commerceMode: COMMERCE_MODES.includes(env.COMMERCE_MODE) ? env.COMMERCE_MODE : 'AFFILIATE',
+    commerceMode: env.COMMERCE_MODE ? String(env.COMMERCE_MODE).trim().toUpperCase() : 'AFFILIATE',
 
     log: { level: env.LOG_LEVEL || (isProduction ? 'info' : 'debug'), pretty: !isProduction },
 
     session: {
       cookieName: env.SESSION_COOKIE || 'ndivepa_session',
+      // La sesión de cliente de tienda es una credencial de cookie distinta de la
+      // del panel. Tenerla nombrada aquí permite que el CSRF la reconozca en vez
+      // de repetir la cadena literal en tres sitios del módulo de clientes.
+      customerCookieName: env.CUSTOMER_SESSION_COOKIE || 'ndivepa_customer',
       ttlMs: readNumber(env.SESSION_TTL_MS, 12 * 3_600_000),
       secure: isProduction,
       absoluteTtlMs: readNumber(env.SESSION_ABSOLUTE_TTL_MS, 30 * 86_400_000),
@@ -55,6 +66,8 @@ export function loadConfig(env = process.env) {
       maxBodyBytes: readNumber(env.MAX_BODY_BYTES, 1_000_000),
       maxJsonDepth: readNumber(env.MAX_JSON_DEPTH, 24),
       maxUploadBytes: readNumber(env.MAX_UPLOAD_BYTES, 700_000),
+      maxUrlLength: readNumber(env.MAX_URL_LENGTH, 8_192),
+      maxQueryParams: readNumber(env.MAX_QUERY_PARAMS, 100),
       csrfCookie: 'ndivepa_csrf',
       csrfHeader: 'x-ndivepa-csrf',
       corsOrigins: readList(env.CORS_ORIGINS, []),
@@ -84,14 +97,44 @@ export function loadConfig(env = process.env) {
     },
 
     storage: {
+      // Carpeta del documento y de los snapshots. Se puede mover para aislar una
+      // instancia de prueba, un contenedor o un volumen distinto del repositorio.
+      dataDir: env.DATA_DIR || null,
+      // Sin valor propio, los snapshots viven en `backups/snapshots`; con `DATA_DIR`
+      // pasan a `<DATA_DIR>/snapshots`, para que una instancia aislada no escriba
+      // en las copias de la instalación principal.
+      snapshotDir: env.SNAPSHOT_DIR || null,
       snapshotKeep: readNumber(env.SNAPSHOT_KEEP, 10),
       backupKeep: readNumber(env.BACKUP_KEEP, 20),
       writeDebounceMs: readNumber(env.WRITE_DEBOUNCE_MS, 0),
+      // En producción el documento se guarda compacto: la sangría de dos espacios
+      // multiplica por dos el fichero y el tiempo de escritura sin aportar nada
+      // a un fichero que nadie lee a mano en un servidor.
+      pretty: readBoolean(env.STORAGE_PRETTY, !isProduction),
     },
 
     jobs: { enabled: readBoolean(env.JOBS_ENABLED, true), tickMs: readNumber(env.JOBS_TICK_MS, 30_000) },
 
-    seed: { enabled: readBoolean(env.SEED_ENABLED, true) },
+    http: {
+      requestTimeoutMs: readNumber(env.REQUEST_TIMEOUT_MS, 30_000),
+      headersTimeoutMs: readNumber(env.HEADERS_TIMEOUT_MS, 15_000),
+      keepAliveTimeoutMs: readNumber(env.KEEP_ALIVE_TIMEOUT_MS, 5_000),
+      shutdownGraceMs: readNumber(env.SHUTDOWN_GRACE_MS, 10_000),
+    },
+
+    discovery: {
+      googleTrendsGeo: String(env.GOOGLE_TRENDS_GEO || 'PY').trim().toUpperCase(),
+      timeoutMs: readNumber(env.DISCOVERY_TIMEOUT_MS, 10_000),
+      cacheTtlMs: readNumber(env.DISCOVERY_CACHE_TTL_MS, 10 * 60_000),
+    },
+
+    seed: {
+      enabled: readBoolean(env.SEED_ENABLED, true),
+      // Los datos base (monedas, países, roles, categorías) se siembran siempre.
+      // El catálogo afiliado de ejemplo, no: una instalación de producción no debe
+      // arrancar con productos y comisiones inventados.
+      demo: readBoolean(env.SEED_DEMO, !isProduction),
+    },
 
     initialAdmin: {
       email: String(env.INITIAL_ADMIN_EMAIL || 'admin@ndivepa.local').trim().toLowerCase(),
@@ -101,10 +144,11 @@ export function loadConfig(env = process.env) {
     },
 
     features: {
-      graphql: readBoolean(env.FEATURE_GRAPHQL, false),
+      graphql: readBoolean(env.FEATURE_GRAPHQL, true),
       webhooks: readBoolean(env.FEATURE_WEBHOOKS, true),
       search: readBoolean(env.FEATURE_SEARCH, true),
       twoFactor: readBoolean(env.FEATURE_2FA, true),
+      trendDiscovery: readBoolean(env.FEATURE_TREND_DISCOVERY, true),
     },
 
     integrations: {
@@ -112,6 +156,7 @@ export function loadConfig(env = process.env) {
       smtp: { configured: Boolean(env.SMTP_URL), from: env.SMTP_FROM || null },
       storage: { configured: Boolean(env.S3_ENDPOINT && env.S3_BUCKET && env.S3_ACCESS_KEY && env.S3_SECRET_KEY), cdnConfigured: Boolean(env.CDN_BASE_URL) },
       search: { provider: env.SEARCH_PROVIDER || null, configured: Boolean(env.SEARCH_API_KEY) },
+      trends: { provider: 'google-trends-rss', configured: readBoolean(env.FEATURE_TREND_DISCOVERY, true) === true },
     },
   };
 
@@ -121,12 +166,73 @@ export function loadConfig(env = process.env) {
 
 function validateConfig(config) {
   const problems = [];
+  const positiveInteger = (value, label, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) => {
+    if (!Number.isInteger(value) || value < min || value > max) problems.push(`${label} debe ser un entero entre ${min} y ${max}.`);
+  };
+  const positiveNumber = (value, label, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) => {
+    if (!Number.isFinite(value) || value < min || value > max) problems.push(`${label} debe ser un número entre ${min} y ${max}.`);
+  };
+
+  if (!['development', 'test', 'production'].includes(config.nodeEnv)) problems.push('NODE_ENV debe ser development, test o production.');
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) problems.push('PORT debe ser un puerto válido.');
-  if (config.publicBaseUrl && !/^https?:\/\//.test(config.publicBaseUrl)) problems.push('PUBLIC_BASE_URL debe empezar por http:// o https://.');
+  if (!config.host || /[\s\r\n]/.test(config.host)) problems.push('HOST no puede estar vacío ni contener espacios.');
+  if (!COMMERCE_MODES.includes(config.commerceMode)) problems.push(`COMMERCE_MODE debe ser uno de: ${COMMERCE_MODES.join(', ')}.`);
+  if (config.publicBaseUrl) {
+    try {
+      const parsed = new URL(config.publicBaseUrl);
+      if (!['http:', 'https:'].includes(parsed.protocol)) problems.push('PUBLIC_BASE_URL debe usar http o https.');
+      if (parsed.username || parsed.password || parsed.search || parsed.hash) problems.push('PUBLIC_BASE_URL no admite credenciales, consulta ni fragmento.');
+    } catch {
+      problems.push('PUBLIC_BASE_URL debe ser una URL absoluta válida.');
+    }
+  }
   if (config.isProduction && config.publicBaseUrl.startsWith('http://')) problems.push('En producción PUBLIC_BASE_URL debe usar HTTPS.');
   if (config.initialAdmin.password && config.initialAdmin.password.length < config.security.passwordMinLength) problems.push(`INITIAL_ADMIN_PASSWORD debe tener al menos ${config.security.passwordMinLength} caracteres.`);
   if (config.security.passwordMinLength < 12) problems.push('PASSWORD_MIN_LENGTH no puede bajar de 12.');
+  if (!config.supportedLocales.length || config.supportedLocales.some(locale => !/^[a-z]{2}(?:-[A-Z]{2})?$/.test(locale))) {
+    problems.push('SUPPORTED_LOCALES debe contener códigos de idioma válidos y no estar vacío.');
+  }
+  if (new Set(config.supportedLocales).size !== config.supportedLocales.length) problems.push('SUPPORTED_LOCALES no puede contener duplicados.');
   if (!config.supportedLocales.includes(config.defaultLocale)) problems.push('DEFAULT_LOCALE debe estar en SUPPORTED_LOCALES.');
+  try { new Intl.DateTimeFormat('es', { timeZone: config.timezone }).format(); } catch { problems.push('TZ_DISPLAY debe ser una zona horaria IANA válida.'); }
+
+  positiveInteger(config.security.maxBodyBytes, 'MAX_BODY_BYTES', { min: 1_024, max: 50_000_000 });
+  positiveInteger(config.security.maxUploadBytes, 'MAX_UPLOAD_BYTES', { min: 1_024, max: 20_000_000 });
+  positiveInteger(config.security.maxJsonDepth, 'MAX_JSON_DEPTH', { min: 2, max: 64 });
+  positiveInteger(config.security.maxUrlLength, 'MAX_URL_LENGTH', { min: 256, max: 65_536 });
+  positiveInteger(config.security.maxQueryParams, 'MAX_QUERY_PARAMS', { min: 1, max: 1_000 });
+  positiveInteger(config.security.passwordMinLength, 'PASSWORD_MIN_LENGTH', { min: 12, max: 200 });
+  positiveInteger(config.security.loginMaxAttempts, 'LOGIN_MAX_ATTEMPTS', { min: 1, max: 100 });
+  positiveNumber(config.security.loginLockMinutes, 'LOGIN_LOCK_MINUTES', { min: 1, max: 10_080 });
+  positiveInteger(config.security.scrypt.cost, 'SCRYPT_COST', { min: 16_384, max: 65_536 });
+  if (Number.isInteger(config.security.scrypt.cost) && (config.security.scrypt.cost & (config.security.scrypt.cost - 1)) !== 0) {
+    problems.push('SCRYPT_COST debe ser una potencia de dos.');
+  }
+  if (![config.security.trustProxy, ...Object.values(config.features), config.jobs.enabled, config.seed.enabled, config.seed.demo, config.storage.pretty].every(value => typeof value === 'boolean')) {
+    problems.push('Las variables booleanas deben usar true/false, 1/0, yes/no u on/off.');
+  }
+  positiveInteger(config.session.ttlMs, 'SESSION_TTL_MS', { min: 60_000, max: 31_536_000_000 });
+  positiveInteger(config.session.absoluteTtlMs, 'SESSION_ABSOLUTE_TTL_MS', { min: 60_000, max: 31_536_000_000 });
+  if (config.session.absoluteTtlMs < config.session.ttlMs) problems.push('SESSION_ABSOLUTE_TTL_MS no puede ser menor que SESSION_TTL_MS.');
+  for (const [name, value] of Object.entries({ SESSION_COOKIE: config.session.cookieName, CUSTOMER_SESSION_COOKIE: config.session.customerCookieName, CSRF_COOKIE: config.security.csrfCookie })) {
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,80}$/.test(value)) problems.push(`${name} no es un nombre de cookie válido.`);
+  }
+  for (const [name, limit] of Object.entries(config.rateLimits)) {
+    positiveInteger(limit.windowMs, `rateLimits.${name}.windowMs`, { min: 1_000, max: 86_400_000 });
+    positiveInteger(limit.max, `rateLimits.${name}.max`, { min: 1, max: 1_000_000 });
+  }
+  positiveInteger(config.storage.snapshotKeep, 'SNAPSHOT_KEEP', { min: 1, max: 1_000 });
+  positiveInteger(config.storage.backupKeep, 'BACKUP_KEEP', { min: 1, max: 10_000 });
+  positiveNumber(config.storage.writeDebounceMs, 'WRITE_DEBOUNCE_MS', { min: 0, max: 60_000 });
+  positiveInteger(config.jobs.tickMs, 'JOBS_TICK_MS', { min: 1_000, max: 86_400_000 });
+  positiveInteger(config.http.requestTimeoutMs, 'REQUEST_TIMEOUT_MS', { min: 1_000, max: 600_000 });
+  positiveInteger(config.http.headersTimeoutMs, 'HEADERS_TIMEOUT_MS', { min: 1_000, max: 600_000 });
+  positiveInteger(config.http.keepAliveTimeoutMs, 'KEEP_ALIVE_TIMEOUT_MS', { min: 1_000, max: 120_000 });
+  positiveInteger(config.http.shutdownGraceMs, 'SHUTDOWN_GRACE_MS', { min: 1_000, max: 120_000 });
+  if (config.http.headersTimeoutMs > config.http.requestTimeoutMs) problems.push('HEADERS_TIMEOUT_MS no puede superar REQUEST_TIMEOUT_MS.');
+  if (!/^[A-Z]{2}$/.test(config.discovery.googleTrendsGeo)) problems.push('GOOGLE_TRENDS_GEO debe ser un código ISO de dos letras.');
+  positiveInteger(config.discovery.timeoutMs, 'DISCOVERY_TIMEOUT_MS', { min: 1_000, max: 60_000 });
+  positiveInteger(config.discovery.cacheTtlMs, 'DISCOVERY_CACHE_TTL_MS', { min: 60_000, max: 86_400_000 });
   if (problems.length) {
     // Configuración inválida detiene el arranque (M-0052): fallar aquí es más
     // barato que descubrirlo con tráfico real.

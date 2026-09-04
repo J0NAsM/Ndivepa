@@ -11,7 +11,12 @@ const JSON_TYPE = 'application/json; charset=utf-8';
 
 export function json(res, status, body, headers = {}) {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { 'Content-Type': JSON_TYPE, 'Cache-Control': 'no-store', ...headers });
+  res.writeHead(status, {
+    'Content-Type': JSON_TYPE,
+    'Cache-Control': 'no-store',
+    'Content-Length': String(Buffer.byteLength(payload)),
+    ...headers,
+  });
   res.end(res.req?.method === 'HEAD' ? undefined : payload);
   return payload.length;
 }
@@ -22,22 +27,30 @@ export function noContent(res, headers = {}) {
 }
 
 export function text(res, status, body, headers = {}) {
-  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', ...headers });
-  res.end(body);
+  const payload = String(body ?? '');
+  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': String(Buffer.byteLength(payload)), ...headers });
+  res.end(res.req?.method === 'HEAD' ? undefined : payload);
 }
 
 export function html(res, status, body, headers = {}) {
-  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
-  res.end(res.req?.method === 'HEAD' ? undefined : body);
+  const payload = String(body ?? '');
+  res.writeHead(status, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Length': String(Buffer.byteLength(payload)),
+    ...headers,
+  });
+  res.end(res.req?.method === 'HEAD' ? undefined : payload);
 }
 
 export function xml(res, status, body, headers = {}) {
-  res.writeHead(status, { 'Content-Type': 'application/xml; charset=utf-8', ...headers });
-  res.end(body);
+  const payload = String(body ?? '');
+  res.writeHead(status, { 'Content-Type': 'application/xml; charset=utf-8', 'Content-Length': String(Buffer.byteLength(payload)), ...headers });
+  res.end(res.req?.method === 'HEAD' ? undefined : payload);
 }
 
 export function redirect(res, location, { status = 302, headers = {} } = {}) {
-  res.writeHead(status, { Location: location, ...headers });
+  res.writeHead(status, { Location: location, 'Content-Length': '0', ...headers });
   res.end();
 }
 
@@ -89,13 +102,20 @@ export function cacheable(req, res, body, { maxAge = 0, headers = {} } = {}) {
 
 /** Cookie con los valores por defecto seguros del proyecto. */
 export function cookie(name, value, { maxAge = null, httpOnly = true, secure = false, sameSite = 'Lax', path = '/' } = {}) {
-  const parts = [`${name}=${value}`, `Path=${path}`, `SameSite=${sameSite}`];
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(String(name))) throw new TypeError('Nombre de cookie inválido.');
+  if (!['Lax', 'Strict', 'None'].includes(sameSite)) throw new TypeError('SameSite inválido.');
+  if (!String(path).startsWith('/') || /[;\r\n]/.test(String(path))) throw new TypeError('Path de cookie inválido.');
+  const encoded = encodeURIComponent(String(value ?? ''));
+  const parts = [`${name}=${encoded}`, `Path=${path}`, `SameSite=${sameSite}`];
   if (httpOnly) parts.push('HttpOnly');
   if (secure) parts.push('Secure');
-  if (maxAge !== null) parts.push(`Max-Age=${Math.floor(maxAge)}`);
+  if (maxAge !== null) {
+    if (!Number.isFinite(Number(maxAge))) throw new TypeError('Max-Age de cookie inválido.');
+    parts.push(`Max-Age=${Math.max(0, Math.floor(maxAge))}`);
+  }
   return parts.join('; ');
 }
 
 export function clearCookie(name, options = {}) {
-  return cookie(name, '', { ...options, maxAge: 0 });
+  return `${cookie(name, '', { ...options, maxAge: 0 })}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
 }

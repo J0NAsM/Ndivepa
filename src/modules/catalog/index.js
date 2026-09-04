@@ -604,10 +604,13 @@ export class ProductService extends BaseService {
     if (changes.status && changes.status !== existing.status) {
       this.assertTransition(existing, changes.status);
       if (changes.status === 'published') {
-        this.assertPublishable({ ...existing, ...changes });
         changes.publishedAt = existing.publishedAt || now();
       }
     }
+    const next = { ...existing, ...changes };
+    const affectsPublication = ['status', 'merchantId', 'programId', 'monetizationType']
+      .some(field => Object.hasOwn(changes, field));
+    if (next.status === 'published' && affectsPublication) this.assertPublishable(next);
     // Al cambiar el handle se guarda el anterior para poder redirigir (M-0336).
     if (changes.handle && changes.handle !== existing.handle) {
       changes.handleHistory = [...new Set([...(existing.handleHistory || []), existing.handle])].slice(-10);
@@ -647,8 +650,15 @@ export class ProductService extends BaseService {
       const links = this.store.collection('affiliateLinks').filter(link => link.productId === product.id && !link.deletedAt);
       if (!links.length) {
         issues.push({ field: 'affiliateLink', message: 'Un producto afiliado necesita al menos un enlace.' });
-      } else if (!links.some(link => link.status === 'valid' || link.status === 'warning')) {
-        issues.push({ field: 'affiliateLink', message: 'Todos los enlaces del producto están marcados como inválidos.' });
+      } else {
+        const compatible = links.filter(link => (
+          link.merchantId === product.merchantId && link.programId === product.programId
+        ));
+        if (!compatible.length) {
+          issues.push({ field: 'affiliateLink', message: 'No hay un enlace del mismo comercio y programa que el producto.' });
+        } else if (!compatible.some(link => link.status === 'valid' || link.status === 'warning')) {
+          issues.push({ field: 'affiliateLink', message: 'Todos los enlaces compatibles del producto están marcados como inválidos.' });
+        }
       }
     }
 

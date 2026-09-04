@@ -1,2 +1,3 @@
-name,description,category,type,merchant_id,program_id,affiliate_url,product_url,price,previous_price,currency,price_source,campaign_id,status,image
-Teclado mecánico,Teclado para trabajo y gaming,Tecnología,physical,mer-amazon,prog-amazon,https://www.amazon.com/dp/example-keyboard?tag=ndivepa-20,https://www.amazon.com/dp/example-keyboard,80,99,USD,manual,camp-tech,draft,⌨️
+name,description,brand,category_id,type,merchant_id,program_id,campaign_id,affiliate_url,product_url,price,previous_price,currency,image
+Teclado mecánico compacto,Teclado de perfil bajo para escritorio de trabajo.,Genérica,pcat_tech,physical,mer-amazon,prog-amazon,camp-tec-2026,https://www.amazon.com/dp/B0DEMO0101?tag=ndivepademo-20,https://www.amazon.com/dp/B0DEMO0101,80,99,USD,⌨️
+Monitor 27 pulgadas,Panel IPS para dos ventanas de trabajo simultáneas.,Genérica,pcat_tech,physical,mer-amazon,prog-amazon,camp-tec-2026,https://www.amazon.com/dp/B0DEMO0102?tag=ndivepademo-20,https://www.amazon.com/dp/B0DEMO0102,229,,USD,🖥️

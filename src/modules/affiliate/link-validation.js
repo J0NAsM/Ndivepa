@@ -13,7 +13,7 @@
 
 /** Hosts que no se admiten como destino, aunque la URL sea sintácticamente válida. */
 export function isUnsafeHost(hostname) {
-  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  const host = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   return (
     host === 'localhost'
     || host.endsWith('.local')
@@ -27,8 +27,9 @@ export function isUnsafeHost(hostname) {
 }
 
 export function hostMatchesDomain(host, domain) {
-  const left = String(host || '').toLowerCase();
-  const right = String(domain || '').toLowerCase();
+  const left = String(host || '').trim().toLowerCase().replace(/\.$/, '');
+  const right = String(domain || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+  if (!left || !right || right.includes('/') || right.includes(':')) return false;
   return left === right || left.endsWith(`.${right}`);
 }
 
@@ -55,7 +56,7 @@ export function validateAffiliateLink(context, input, timestamp = new Date().toI
     return { ...INVALID(['La URL de afiliado no tiene un formato válido.']), checkedAt: timestamp };
   }
 
-  if (!['https:', 'http:'].includes(url.protocol) || isUnsafeHost(url.hostname)) {
+  if (!['https:', 'http:'].includes(url.protocol) || isUnsafeHost(url.hostname) || url.username || url.password) {
     return { ...INVALID(['La URL usa un protocolo o host no permitido.']), checkedAt: timestamp };
   }
 
@@ -69,31 +70,58 @@ export function validateAffiliateLink(context, input, timestamp = new Date().toI
   let policy = 'valid';
 
   if (url.protocol !== 'https:') messages.push('Usa HTTPS siempre que el programa lo permita.');
+  if (url.port && !['80', '443'].includes(url.port)) {
+    policy = 'warning';
+    messages.push('La URL usa un puerto no estándar; confirma que pertenece al programa.');
+  }
 
   if (!merchant) {
-    commercial = 'warning';
+    commercial = 'invalid';
     messages.push('No se encontró el comercio.');
   } else if (!merchant.domains?.some(domain => hostMatchesDomain(url.hostname, domain))) {
-    commercial = 'warning';
+    commercial = 'invalid';
     messages.push('El dominio no coincide con el comercio esperado.');
   } else if (merchant.status && merchant.status !== 'active') {
-    commercial = 'warning';
+    commercial = 'invalid';
     messages.push('El comercio está marcado como inactivo.');
   }
 
   if (!program || program.status !== 'active') {
-    commercial = 'warning';
+    commercial = 'invalid';
     messages.push('El programa está inactivo o no existe.');
+  } else if (merchant && program.merchantId && program.merchantId !== merchant.id) {
+    commercial = 'invalid';
+    messages.push('El programa no pertenece al comercio seleccionado.');
   }
 
   if (program?.requiredTrackingKey) {
-    const value = url.searchParams.get(program.requiredTrackingKey);
-    if (!value) {
+    const values = url.searchParams.getAll(program.requiredTrackingKey);
+    const value = values[0];
+    if (values.length > 1) {
+      tracking = 'invalid';
+      messages.push(`El parámetro de tracking ${program.requiredTrackingKey} está duplicado.`);
+    } else if (!value) {
       tracking = 'invalid';
       messages.push(`Falta el parámetro de tracking ${program.requiredTrackingKey}.`);
     } else if (program.trackingId && value !== program.trackingId) {
       tracking = 'invalid';
       messages.push('El tracking ID no coincide con la cuenta configurada.');
+    }
+  }
+
+  if (input.productUrl) {
+    try {
+      const productUrl = new URL(input.productUrl);
+      if (!['https:', 'http:'].includes(productUrl.protocol) || isUnsafeHost(productUrl.hostname) || productUrl.username || productUrl.password) {
+        throw new Error('unsafe');
+      }
+      if (merchant && !merchant.domains?.some(domain => hostMatchesDomain(productUrl.hostname, domain))) {
+        commercial = 'invalid';
+        messages.push('La URL normal del producto no pertenece al comercio seleccionado.');
+      }
+    } catch {
+      commercial = 'invalid';
+      messages.push('La URL normal del producto no es un destino permitido.');
     }
   }
 
@@ -114,7 +142,9 @@ export function validateAffiliateLink(context, input, timestamp = new Date().toI
     messages.push('Estructura, comercio y tracking verificados contra la configuración local.');
   }
 
-  const status = tracking === 'invalid' ? 'invalid' : commercial === 'warning' || policy === 'warning' ? 'warning' : 'valid';
+  const status = tracking === 'invalid' || commercial === 'invalid'
+    ? 'invalid'
+    : commercial === 'warning' || policy === 'warning' ? 'warning' : 'valid';
   return { status, technical: 'valid', commercial, tracking, policy, messages, checkedAt: timestamp };
 }
 

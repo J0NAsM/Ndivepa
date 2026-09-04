@@ -80,7 +80,7 @@ network_conversion_id,click_id,product_id,type,sale_amount,sale_currency,commiss
 4. Ejecuta:
 
 ```powershell
-cd D:\Proyectos\MarketingdeAfiliados\Ndivepa
+cd <carpeta-del-repositorio>
 npm run import-conversions -- .\tu-reporte.csv
 ```
 
@@ -122,3 +122,32 @@ Redes que deben conectar primero:
 ```
 
 Con una URL HTTPS pública se podrán registrar endpoints de webhook/postback con cada red. Primero se verificará la firma de cada proveedor y se probará con eventos de prueba; no se deben aceptar webhooks sin firma ni importar pagos automáticamente sin conciliación.
+
+## 10. Verificación local antes de conectar servicios
+
+La auditoría técnica y el inventario de 112 mejoras implementadas están en
+[`.context/Auditoria_112_Mejoras.md`](.context/Auditoria_112_Mejoras.md). Antes de
+desplegar o cargar credenciales, ejecuta:
+
+```powershell
+npm run check:full
+npm run doctor
+```
+
+No continúes con integraciones externas si alguna comprobación termina con un
+código distinto de cero.
+
+## 11. Activar el descubrimiento de oportunidades
+
+Ndivepa ya incluye **Panel → Descubrimiento** para consultar tendencias de Google
+por país y preparar productos afiliados. Antes de poder importar, cada programa
+debe estar aprobado por la red, tener su tracking real verificado y estar marcado
+como habilitado para descubrimiento.
+
+La guía completa, las variables de entorno y los límites de esta automatización
+están en [`.context/Descubrimiento_Afiliado.md`](.context/Descubrimiento_Afiliado.md).
+
+El sistema no puede crear por sí solo una cuenta afiliada ni un identificador que
+genere comisiones: esos datos los entrega cada comercio después de aprobar tu
+solicitud. Una vez configurados, Ndivepa valida y agrega la oportunidad desde una
+sola pantalla.

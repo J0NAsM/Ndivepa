@@ -5,7 +5,8 @@
  * hoja de cálculo; internamente siguen guardados en unidades mínimas. La columna de
  * moneda va siempre al lado del importe para que la cifra no quede sin contexto.
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { bootstrapCli, finish } from './lib/bootstrap.js';
 import { csvRow } from '../src/framework/strings.js';
 import { toDecimal } from '../src/framework/money.js';
@@ -24,7 +25,11 @@ const orderModule = app.container.resolve('order');
 
 const write = async (filename, headers, rows) => {
   const content = [csvRow(headers), ...rows.map(csvRow)].join('\n');
-  await writeFile(new URL(filename, outDir), `${content}\n`, 'utf8');
+  const target = new URL(filename, outDir);
+  const temporary = new URL(`.${filename}.${randomUUID()}.tmp`, outDir);
+  // BOM para Excel y escritura atómica para no dejar un informe truncado.
+  await writeFile(temporary, `\uFEFF${content}\n`, 'utf8');
+  try { await rename(temporary, target); } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
   return { filename, rows: rows.length };
 };
 

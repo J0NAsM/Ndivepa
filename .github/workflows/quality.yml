@@ -9,14 +9,52 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 es el mínimo que declara `engines`; 24 es la versión de la imagen de
+        # producción. Ambas tienen que pasar, o una de las dos promesas es falsa.
+        node-version: [20, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci --ignore-scripts
+      # El arranque en frío es parte de lo que se comprueba: el repositorio no
+      # incluye `data/db.json`, así que migración y semilla corren aquí desde cero.
       - run: npm run check
+      - run: npm run audit:dependencies
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # La imagen se construyó durante meses sin copiar `src/` ni instalar
+      # dependencias, y nadie lo notó porque nada la arrancaba en CI.
+      - run: docker build -t ndivepa:ci .
+      - name: Arrancar el contenedor y comprobar la sonda de vida
+        run: |
+          docker run -d --name ndivepa-ci -p 4300:4300 \
+            -e INITIAL_ADMIN_EMAIL=admin@ci.local \
+            -e INITIAL_ADMIN_PASSWORD=ContrasenaDeIntegracion2026 \
+            ndivepa:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4300/healthz > /dev/null; then
+              echo "La imagen responde."
+              curl -fsS http://127.0.0.1:4300/api/ready
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "La imagen no respondió a tiempo:"
+          docker logs ndivepa-ci
+          exit 1
+      - name: Registro del contenedor
+        if: always()
+        run: docker logs ndivepa-ci || true

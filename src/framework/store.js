@@ -8,11 +8,31 @@
  *  4. Sin transacciones -> `transaction()` confirma todo o nada.
  *  5. Migración destructiva -> migraciones versionadas con snapshot previo.
  */
-import { readFile, writeFile, rename, mkdir, readdir, unlink, copyFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { readFile, writeFile, rename, mkdir, readdir, unlink, copyFile, open } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 import { NdivepaError } from './errors.js';
 import { now } from './dates.js';
+
+/**
+ * `fsync` del directorio para que el `rename` sobreviva a un corte.
+ *
+ * No todos los sistemas lo permiten (Windows devuelve `EPERM`/`EISDIR` al abrir
+ * un directorio para escritura), así que el fallo se ignora: en esas plataformas
+ * el `rename` ya es duradero por otras vías y detener el arranque por esto
+ * sería peor que no sincronizar.
+ */
+async function syncDirectory(directory) {
+  let handle;
+  try {
+    handle = await open(directory, 'r');
+    await handle.sync();
+  } catch {
+    /* plataforma que no sincroniza directorios: se acepta */
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
 
 export class Store {
   /**
@@ -21,11 +41,15 @@ export class Store {
    * @param {string} options.snapshotDir carpeta de snapshots previos a migración
    * @param {object} options.logger
    */
-  constructor({ file, snapshotDir, logger, snapshotKeep = 10 }) {
+  constructor({ file, snapshotDir, logger, snapshotKeep = 10, pretty = true }) {
     this.file = file;
-    this.tempFile = `${file}.tmp`;
+    // El temporal lleva el PID: si el servidor y un script de operación escriben
+    // a la vez, cada uno usa su propio fichero y el `rename` de uno no deja al
+    // otro con un temporal a medias.
+    this.tempFile = `${file}.${process.pid}.${randomUUID()}.tmp`;
     this.snapshotDir = snapshotDir;
     this.snapshotKeep = snapshotKeep;
+    this.pretty = pretty;
     this.logger = logger;
     this.state = null;
     this.migrations = [];
@@ -43,13 +67,17 @@ export class Store {
 
   /** Añade una migración `from -> from + 1`. Se aplican en orden. */
   migration({ from, to, description, up }) {
+    if (!Number.isInteger(from) || !Number.isInteger(to) || to !== from + 1 || typeof up !== 'function') {
+      throw new TypeError(`Migración inválida ${from}->${to}; debe avanzar exactamente una versión.`);
+    }
+    if (this.migrations.some(migration => migration.from === from)) throw new TypeError(`Ya existe una migración desde la versión ${from}.`);
     this.migrations.push({ from, to, description, up });
     this.migrations.sort((a, b) => a.from - b.from);
     return this;
   }
 
   get targetVersion() {
-    return this.migrations.reduce((max, migration) => Math.max(max, migration.to), 1);
+    return this.migrations.reduce((max, migration) => Math.max(max, migration.to), 0);
   }
 
   async load() {
@@ -66,9 +94,13 @@ export class Store {
     } else {
       try {
         this.state = JSON.parse(raw);
+        if (!this.state || typeof this.state !== 'object' || Array.isArray(this.state)) {
+          throw new TypeError('La raíz del documento debe ser un objeto.');
+        }
       } catch (error) {
         // Documento corrupto: recuperar desde el último snapshot antes de rendirse (M-0061).
         this.logger?.error('El documento de datos no se pudo leer; se intenta recuperar un snapshot.', error);
+        await copyFile(this.file, `${this.file}.corrupto`).catch(() => {});
         this.state = await this.recoverFromSnapshot();
       }
     }
@@ -98,7 +130,25 @@ export class Store {
    */
   async migrate() {
     const current = Number(this.state.schemaVersion || 0);
-    const pending = this.migrations.filter(migration => migration.from >= current);
+    if (!Number.isInteger(current) || current < 0) {
+      throw new NdivepaError('La versión de esquema almacenada no es válida.', { code: 'invalid_schema_version' });
+    }
+    if (current > this.targetVersion) {
+      throw new NdivepaError(
+        `El documento usa el esquema v${current}, más nuevo que esta aplicación (v${this.targetVersion}).`,
+        { code: 'schema_too_new' },
+      );
+    }
+    const pending = [];
+    let cursor = current;
+    while (cursor < this.targetVersion) {
+      const migration = this.migrations.find(candidate => candidate.from === cursor);
+      if (!migration) {
+        throw new NdivepaError(`Falta la migración que parte de v${cursor}.`, { code: 'migration_gap' });
+      }
+      pending.push(migration);
+      cursor = migration.to;
+    }
     if (!pending.length) {
       if (this.state.schemaVersion === undefined) this.state.schemaVersion = this.targetVersion;
       return { applied: [], from: current, to: this.state.schemaVersion };
@@ -106,9 +156,10 @@ export class Store {
 
     await this.snapshot(`pre-migracion-v${current}`);
     const applied = [];
+    const beforeMigrations = structuredClone(this.state);
     for (const migration of pending) {
       try {
-        const result = migration.up(this.state) || this.state;
+        const result = (await migration.up(this.state)) || this.state;
         this.state = result;
         this.state.schemaVersion = migration.to;
         this.state.migrations = [
@@ -119,6 +170,7 @@ export class Store {
         this.stats.migrations += 1;
         this.logger?.info('Migración aplicada', { from: migration.from, to: migration.to, description: migration.description });
       } catch (error) {
+        this.state = beforeMigrations;
         throw new NdivepaError(
           `La migración ${migration.from}->${migration.to} falló: ${error.message}. Se conserva el snapshot previo.`,
           { code: 'migration_failed', status: 500, cause: error },
@@ -138,7 +190,7 @@ export class Store {
     const target = join(this.snapshotDir, `${label}-${stamp}.json`);
     const payload = JSON.stringify(this.state ?? {}, null, 2);
     await writeFile(target, payload);
-    await writeFile(`${target}.sha256`, `${createHash('sha256').update(payload).digest('hex')}  ${target}\n`);
+    await writeFile(`${target}.sha256`, `${createHash('sha256').update(payload).digest('hex')}  ${basename(target)}\n`);
     await this.rotateSnapshots();
     return target;
   }
@@ -169,8 +221,8 @@ export class Store {
             continue;
           }
           const candidate = JSON.parse(payload.toString('utf8'));
+          if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
           this.logger?.warn('Documento recuperado desde snapshot', { snapshot: name });
-          await copyFile(this.file, `${this.file}.corrupto`).catch(() => {});
           return candidate;
         } catch {
           /* probar el siguiente snapshot */
@@ -179,17 +231,41 @@ export class Store {
     } catch {
       /* sin snapshots disponibles */
     }
-    this.logger?.warn('No hay snapshot válido; se arranca con un documento vacío.');
-    return this.emptyDocument();
+    throw new NdivepaError(
+      'El documento de datos está corrupto y no existe un snapshot válido. Se conservó una copia con sufijo .corrupto.',
+      { code: 'storage_corrupt', status: 500 },
+    );
   }
 
-  /** Escritura atómica: temporal + rename (M-0054). */
+  /**
+   * Escritura atómica y duradera: temporal + `fsync` + `rename` (M-0054).
+   *
+   * El `rename` solo garantiza atomicidad frente a un lector concurrente. Sin
+   * `fsync` previo, un corte de corriente puede dejar el nombre nuevo apuntando
+   * a un contenido incompleto, que es exactamente el fallo que la escritura
+   * atómica pretende evitar. Se sincroniza el fichero y después el directorio,
+   * para que el propio `rename` quede en disco.
+   */
   async persist() {
     this.state.updatedAt = now();
-    const payload = JSON.stringify(this.state, null, 2);
-    await mkdir(join(this.file, '..'), { recursive: true });
-    await writeFile(this.tempFile, payload);
-    await rename(this.tempFile, this.file);
+    const payload = this.pretty ? JSON.stringify(this.state, null, 2) : JSON.stringify(this.state);
+    const directory = dirname(this.file);
+    await mkdir(directory, { recursive: true });
+
+    const handle = await open(this.tempFile, 'wx');
+    try {
+      await handle.writeFile(payload, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await rename(this.tempFile, this.file);
+    } catch (error) {
+      await unlink(this.tempFile).catch(() => {});
+      throw error;
+    }
+    await syncDirectory(directory);
     this.stats.writes += 1;
   }
 

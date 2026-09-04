@@ -1,0 +1,22 @@
+# Lo que nunca debe entrar en la imagen: historia, datos locales, copias de
+# seguridad y credenciales. Sin este fichero el contexto de build enviaba el
+# repositorio completo al demonio de Docker.
+.git
+.github
+.context
+node_modules
+data
+backups
+exports
+test
+*.md
+!README.md
+.env
+.env.*
+!.env.example
+public/uploads/*
+!public/uploads/.gitkeep
+iniciar-ndivepa.cmd
+iniciar-ndivepa.ps1
+Dockerfile
+docker-compose.yml

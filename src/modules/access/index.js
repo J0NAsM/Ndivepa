@@ -7,7 +7,7 @@
  * (scrypt con `salt` y `passwordHash` en hexadecimal) para no invalidar la cuenta
  * existente al migrar.
  */
-import { createHmac, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { BaseService, crudRoutes, defineResource } from '../base.js';
 import { rule, validate } from '../../framework/validate.js';
 import { ConflictError, ForbiddenError, UnauthorizedError, ValidationError } from '../../framework/errors.js';
@@ -18,12 +18,23 @@ import { now, plusMinutes, toDate } from '../../framework/dates.js';
 import * as respond from '../../framework/http/respond.js';
 import { issueCsrfToken } from '../../framework/http/middlewares.js';
 
-/** Compatible con el monolito: mismos parámetros, mismo formato hexadecimal. */
-export const hashPassword = (password, salt) => scryptSync(password, salt, 64).toString('hex');
+/** La verificación en dos pasos se puede desactivar por instalación (`FEATURE_2FA`). */
+function assertTwoFactorEnabled(container) {
+  if (container.resolve('config').features.twoFactor) return true;
+  throw new ConflictError('La verificación en dos pasos está desactivada en esta instalación.', { feature: 'twoFactor' });
+}
 
-export function verifyPassword(password, salt, expectedHex) {
+/** Compatible con el monolito: mismos parámetros, mismo formato hexadecimal. */
+export const hashPassword = (password, salt, cost = 16_384) => scryptSync(password, salt, 64, {
+  N: cost,
+  r: 8,
+  p: 1,
+  maxmem: Math.max(32 * 1024 * 1024, cost * 128 * 8 * 2),
+}).toString('hex');
+
+export function verifyPassword(password, salt, expectedHex, cost = 16_384) {
   const expected = Buffer.from(String(expectedHex || ''), 'hex');
-  const actual = Buffer.from(hashPassword(String(password ?? ''), salt), 'hex');
+  const actual = Buffer.from(hashPassword(String(password ?? ''), salt || 'invalid-salt', cost), 'hex');
   return expected.length === actual.length && timingSafeEqual(actual, expected);
 }
 
@@ -214,7 +225,8 @@ export class UserService extends BaseService {
     const record = await this.store.transaction(state => this.repository.insert(state, {
       ...data,
       salt,
-      passwordHash: hashPassword(password, salt),
+      passwordHash: hashPassword(password, salt, this.config.security.scrypt.cost),
+      passwordCost: this.config.security.scrypt.cost,
       failedLogins: 0,
       lockedUntil: null,
       lastLoginAt: null,
@@ -228,7 +240,8 @@ export class UserService extends BaseService {
     const salt = randomUUID();
     const result = await this.store.transaction(state => this.repository.patch(state, userId, {
       salt,
-      passwordHash: hashPassword(password, salt),
+      passwordHash: hashPassword(password, salt, this.config.security.scrypt.cost),
+      passwordCost: this.config.security.scrypt.cost,
       passwordChangedAt: now(),
       failedLogins: 0,
       lockedUntil: null,
@@ -318,7 +331,8 @@ export class SessionService {
       const row = (state[this.collection] || []).find(entry => entry.id === sessionId);
       if (!row) return null;
       row.lastSeenAt = now();
-      row.expiresAt = new Date(Date.now() + this.config.session.ttlMs).toISOString();
+      const absolute = toDate(row.absoluteExpiresAt)?.getTime() ?? Date.now();
+      row.expiresAt = new Date(Math.min(Date.now() + this.config.session.ttlMs, absolute)).toISOString();
       return row;
     });
   }
@@ -349,7 +363,9 @@ export class SessionService {
   listFor(userId) {
     return this.store
       .collection(this.collection)
-      .filter(row => row.userId === userId && !row.revokedAt)
+      .filter(row => row.userId === userId && !row.revokedAt
+        && (toDate(row.expiresAt)?.getTime() ?? 0) > Date.now()
+        && (toDate(row.absoluteExpiresAt)?.getTime() ?? 0) > Date.now())
       .map(row => ({
         id: `${row.id.slice(0, 12)}…`,
         ip: row.ip,
@@ -496,12 +512,52 @@ export class InviteService extends BaseService {
   }
 }
 
-/** TOTP RFC-6238 sin dependencias (M-0261). */
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(bytes) {
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += BASE32[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) output += BASE32[(value << (5 - bits)) & 31];
+  return output;
+}
+
+function base32Decode(input) {
+  const normalized = String(input || '').toUpperCase().replace(/=+$/, '').replace(/[\s-]/g, '');
+  if (!normalized || [...normalized].some(char => !BASE32.includes(char))) return null;
+  let bits = 0;
+  let value = 0;
+  const bytes = [];
+  for (const char of normalized) {
+    value = (value << 5) | BASE32.indexOf(char);
+    bits += 5;
+    if (bits >= 8) {
+      bytes.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+const backupCodeHash = code => createHash('sha256').update(String(code || '').trim().toUpperCase()).digest('hex');
+
+/** TOTP RFC-6238 compatible con aplicaciones autenticadoras (secreto Base32). */
 export const totp = {
-  secret: () => generateToken(20).toUpperCase().replace(/[^A-Z2-7]/g, '').slice(0, 32) || 'JBSWY3DPEHPK3PXP',
+  secret: () => base32Encode(randomBytes(20)),
 
   code(secret, timeStep = Math.floor(Date.now() / 30_000)) {
-    const key = Buffer.from(secret, 'utf8');
+    const key = base32Decode(secret);
+    // RFC-6238 hereda la recomendacion de claves de al menos 128 bits de HOTP.
+    // Esto tambien evita aceptar texto casual formado solo por letras Base32.
+    if (!key || key.length < 16 || !Number.isSafeInteger(timeStep) || timeStep < 0) return null;
     const counter = Buffer.alloc(8);
     counter.writeBigUInt64BE(BigInt(timeStep));
     const digest = createHmac('sha1', key).update(counter).digest();
@@ -512,8 +568,10 @@ export const totp = {
 
   /** Acepta el paso anterior y el siguiente: los relojes nunca están perfectos. */
   verify(secret, presented) {
+    const candidate = String(presented || '').trim();
+    if (!/^\d{6}$/.test(candidate)) return false;
     const step = Math.floor(Date.now() / 30_000);
-    return [step - 1, step, step + 1].some(candidate => safeEqual(totp.code(secret, candidate), String(presented || '')));
+    return [step - 1, step, step + 1].some(window => safeEqual(totp.code(secret, window), candidate));
   },
 };
 
@@ -532,28 +590,37 @@ export class AuthService {
     const user = this.users.byEmail(email);
     // Mensaje idéntico en todos los fallos: no se revela si el correo existe.
     const invalid = new UnauthorizedError('Correo o contraseña incorrectos.');
-    if (!user || !password) throw invalid;
+    if (!user || !password) {
+      // Mantiene un coste parecido cuando el correo no existe para no convertir
+      // el tiempo de respuesta en un enumerador de cuentas.
+      verifyPassword(password || '', 'ndivepa-dummy-salt', '00'.repeat(64), this.config.security.scrypt.cost);
+      throw invalid;
+    }
     if (this.users.isLocked(user)) {
       throw new UnauthorizedError('La cuenta está bloqueada temporalmente por intentos fallidos.');
     }
-    if (user.status === 'suspended') throw new ForbiddenError('La cuenta está suspendida.');
-    if (!verifyPassword(password, user.salt, user.passwordHash)) {
+    if (user.status !== 'active') throw new ForbiddenError('La cuenta no está activa.');
+    if (!verifyPassword(password, user.salt, user.passwordHash, user.passwordCost || 16_384)) {
       await this.users.registerFailedLogin(user.id);
       await this.audit?.record({ action: 'login_failed', entity: 'user', entityId: user.id, note: ip || null });
       throw invalid;
     }
     if (user.twoFactor?.enabled) {
       if (!code) throw new UnauthorizedError('Introduce el código de verificación en dos pasos.');
-      const ok = totp.verify(user.twoFactor.secret, code)
-        || (user.twoFactor.backupCodes || []).some(backup => safeEqual(backup, String(code)));
+      const presentedBackupHash = backupCodeHash(code);
+      const legacyBackup = (user.twoFactor.backupCodes || []).some(backup => safeEqual(backup, String(code).trim().toUpperCase()));
+      const hashedBackup = (user.twoFactor.backupCodeHashes || []).some(hash => safeEqual(hash, presentedBackupHash));
+      const backupAccepted = legacyBackup || hashedBackup;
+      const ok = totp.verify(user.twoFactor.secret, code) || backupAccepted;
       if (!ok) {
         await this.users.registerFailedLogin(user.id);
         throw new UnauthorizedError('El código de verificación no es válido.');
       }
-      if ((user.twoFactor.backupCodes || []).some(backup => safeEqual(backup, String(code)))) {
+      if (backupAccepted) {
         await this.store.transaction(state => {
           const row = (state.users || []).find(entry => entry.id === user.id);
-          row.twoFactor.backupCodes = row.twoFactor.backupCodes.filter(backup => !safeEqual(backup, String(code)));
+          row.twoFactor.backupCodes = (row.twoFactor.backupCodes || []).filter(backup => !safeEqual(backup, String(code).trim().toUpperCase()));
+          row.twoFactor.backupCodeHashes = (row.twoFactor.backupCodeHashes || []).filter(hash => !safeEqual(hash, presentedBackupHash));
         });
       }
     }
@@ -562,7 +629,7 @@ export class AuthService {
     const session = await this.sessions.create({ userId: user.id, ip, userAgent });
     await this.events.emit('auth.login', { userId: user.id, sessionId: session.id, ip });
     await this.audit?.record({ action: 'login', entity: 'user', entityId: user.id, note: ip || null });
-    return { user: this.users.publicView(user), session };
+    return { user: this.users.publicView(this.users.repository.retrieve(user.id)), session };
   }
 
   async logout(sessionId) {
@@ -575,10 +642,10 @@ export class AuthService {
   async changePassword({ userId, currentPassword, newPassword, sessionId = null }) {
     const user = this.store.collection('users').find(row => row.id === userId);
     if (!user) throw new UnauthorizedError();
-    if (!verifyPassword(currentPassword, user.salt, user.passwordHash)) {
+    if (!verifyPassword(currentPassword, user.salt, user.passwordHash, user.passwordCost || 16_384)) {
       throw ValidationError.single('currentPassword', 'La contraseña actual no es correcta.');
     }
-    if (verifyPassword(newPassword, user.salt, user.passwordHash)) {
+    if (verifyPassword(newPassword, user.salt, user.passwordHash, user.passwordCost || 16_384)) {
       throw ValidationError.single('newPassword', 'La contraseña nueva debe ser distinta de la actual.');
     }
     await this.users.setPassword(userId, newPassword);
@@ -589,15 +656,17 @@ export class AuthService {
 
   async enableTwoFactor(userId) {
     const secret = totp.secret();
-    const backupCodes = Array.from({ length: 8 }, () => generateToken(6).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase());
+    const backupCodes = Array.from({ length: 8 }, () => base32Encode(randomBytes(5)).slice(0, 8));
     await this.store.transaction(state => {
       const row = (state.users || []).find(entry => entry.id === userId);
       if (!row) return null;
-      row.twoFactor = { enabled: false, secret, backupCodes, confirmedAt: null };
+      row.twoFactor = { enabled: false, secret, backupCodes: [], backupCodeHashes: backupCodes.map(backupCodeHash), confirmedAt: null };
       return row;
     });
     // Se devuelve una sola vez, antes de confirmar con el primer código válido.
-    return { secret, backupCodes, otpauth: `otpauth://totp/Ndivepa?secret=${secret}&issuer=Ndivepa` };
+    const user = this.store.collection('users').find(row => row.id === userId);
+    const label = encodeURIComponent(`Ndivepa:${user?.email || userId}`);
+    return { secret, backupCodes, otpauth: `otpauth://totp/${label}?secret=${secret}&issuer=Ndivepa&algorithm=SHA1&digits=6&period=30` };
   }
 
   async confirmTwoFactor(userId, code) {
@@ -613,12 +682,12 @@ export class AuthService {
 
   async disableTwoFactor(userId, password) {
     const user = this.store.collection('users').find(row => row.id === userId);
-    if (!verifyPassword(password, user?.salt, user?.passwordHash)) {
+    if (!verifyPassword(password, user?.salt, user?.passwordHash, user?.passwordCost || 16_384)) {
       throw ValidationError.single('password', 'La contraseña no es correcta.');
     }
     await this.store.transaction(state => {
       const row = (state.users || []).find(entry => entry.id === userId);
-      row.twoFactor = { enabled: false, secret: null, backupCodes: [], confirmedAt: null };
+      row.twoFactor = { enabled: false, secret: null, backupCodes: [], backupCodeHashes: [], confirmedAt: null };
     });
     return { enabled: false };
   }
@@ -861,11 +930,12 @@ export default {
               'Content-Type': 'application/json; charset=utf-8',
               'Cache-Control': 'no-store',
               'Set-Cookie': [
-                respond.cookie(settings.cookieName, session.id, { maxAge: settings.ttlMs / 1000, secure: settings.secure }),
+                respond.cookie(settings.cookieName, session.id, { maxAge: settings.ttlMs / 1000, secure: settings.secure, sameSite: 'Strict' }),
                 respond.cookie(config().security.csrfCookie, session.csrfToken, {
                   maxAge: settings.ttlMs / 1000,
                   httpOnly: false,
                   secure: settings.secure,
+                  sameSite: 'Strict',
                 }),
               ],
             });
@@ -876,7 +946,6 @@ export default {
           method: 'POST',
           path: '/auth/logout',
           permission: null,
-          csrf: false,
           summary: 'Cierra la sesión actual.',
           tags: ['auth'],
           handler: async ctx => {
@@ -931,6 +1000,10 @@ export default {
           tags: ['auth'],
           handler: ctx => {
             if (!ctx.actor) throw new UnauthorizedError();
+            // `FEATURE_2FA` existía en la configuración pero no lo leía nadie:
+            // apagarlo dejaba la inscripción abierta igual. Aquí se cierra el
+            // alta; los usuarios que ya lo tengan activo siguen verificándose.
+            assertTwoFactorEnabled(container);
             return module().auth.enableTwoFactor(ctx.actor.id);
           },
         },
@@ -943,6 +1016,7 @@ export default {
           body: { code: rule.text(12, { required: true }) },
           handler: ctx => {
             if (!ctx.actor) throw new UnauthorizedError();
+            assertTwoFactorEnabled(container);
             return module().auth.confirmTwoFactor(ctx.actor.id, ctx.body.code);
           },
         },

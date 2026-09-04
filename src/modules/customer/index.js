@@ -236,7 +236,7 @@ export class CustomerService extends BaseService {
   }
 
   customerFromRequest(ctx) {
-    return this.customerFromSession(ctx.cookies.ndivepa_customer);
+    return this.customerFromSession(ctx.cookies[ctx.config.session.customerCookieName]);
   }
 
   async revokeSession(token) {
@@ -569,13 +569,14 @@ export default {
           handler: async ctx => {
             const customer = await module().customers.authenticate(ctx.body);
             const session = await module().customers.createSession(customer.id);
-            const secure = container.resolve('config').session.secure;
+            const sessionConfig = container.resolve('config').session;
+            const secure = sessionConfig.secure;
             const csrfToken = issueCsrfToken();
             ctx.res.writeHead(200, {
               'Content-Type': 'application/json; charset=utf-8',
               'Cache-Control': 'no-store',
               'Set-Cookie': [
-                `ndivepa_customer=${session.token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure ? '; Secure' : ''}`,
+                `${sessionConfig.customerCookieName}=${session.token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure ? '; Secure' : ''}`,
                 `ndivepa_csrf=${csrfToken}; SameSite=Lax; Path=/; Max-Age=2592000${secure ? '; Secure' : ''}`,
               ],
             });
@@ -589,8 +590,9 @@ export default {
           summary: 'Cierra la sesión del cliente.',
           tags: ['store'],
           handler: async ctx => {
-            await module().customers.revokeSession(ctx.cookies.ndivepa_customer);
-            ctx.res.writeHead(204, { 'Set-Cookie': ['ndivepa_customer=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0', 'ndivepa_csrf=; SameSite=Lax; Path=/; Max-Age=0'] });
+            const cookieName = container.resolve('config').session.customerCookieName;
+            await module().customers.revokeSession(ctx.cookies[cookieName]);
+            ctx.res.writeHead(204, { 'Set-Cookie': [`${cookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`, 'ndivepa_csrf=; SameSite=Lax; Path=/; Max-Age=0'] });
             ctx.res.end();
           },
         },
