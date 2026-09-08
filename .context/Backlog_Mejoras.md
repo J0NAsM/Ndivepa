@@ -1155,7 +1155,7 @@ Marcas: `[x]` hecho · `[ ]` pendiente · `[!]` bloqueado por acceso externo (nu
 - [ ] M-1031 README actualizado con la arquitectura nueva.
 - [ ] M-1032 `Operaciones_Locales.md` actualizado con los comandos nuevos.
 - [ ] M-1033 `Pasos_A_Seguir.md` alineado con el plan maestro.
-- [ ] M-1034 `Registro_De_Cambios.md` con lo ejecutado y su fecha.
+- [x] M-1034 `Registro_De_Cambios.md` con lo ejecutado y su fecha.
 - [ ] M-1035 Guía de contribución con el contrato de módulo.
 - [ ] M-1036 Guía de despliegue con lo que falta por acceso externo.
 - [ ] M-1037 Inventario de bloqueos externos revisado y fechado.

@@ -346,3 +346,29 @@ defecto, no una mejora.
 6. **Sin consentimiento no hay analítica.** El clic redirige igual, pero no se registra.
 7. **Los secretos viven en variables de entorno.** Nunca en `db.json`, documentos ni código.
 8. **No se inventan datos.** Ni credenciales, ni textos legales, ni métricas de campo.
+9. **Una tendencia no se publica automáticamente como producto.** Debe existir una
+   revisión editorial, un programa aprobado y una URL afiliada exacta que pase las
+   reglas del comercio y del tracking.
+10. **El proveedor de tendencias está fijado por código.** El usuario solo controla
+    el país y los límites validados; no puede convertir la consulta saliente en un
+    proxy hacia otra URL.
+
+### 4.1 Descubrimiento afiliado
+
+`TrendsDiscoveryService` consulta el RSS oficial con timeout, límite de respuesta,
+rechazo de redirecciones y caché por país. El módulo de afiliación combina cada
+resultado con el catálogo y la elegibilidad de los programas. La importación vuelve
+a verificar que la consulta exista y que el programa siga preparado antes de crear
+un producto borrador y su enlace.
+
+```text
+GET oportunidades
+  → RSS fijo de Google → parseo limitado → clasificación → catálogo/programas
+
+POST importación
+  → RBAC + CSRF → tendencia vigente → programa elegible → preview del enlace
+  → producto borrador → enlace validado → publicación opcional
+```
+
+Si el enlace falla después de crear el borrador, el producto se elimina lógicamente.
+La URL afiliada nunca se reescribe y los datos de procedencia quedan en `metadata`.

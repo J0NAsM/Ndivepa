@@ -35,6 +35,22 @@ Para registrar la tarea diaria local a las 03:00 (puedes cambiar la hora), ejecu
 
 Los umbrales se configuran mediante `LINK_STALE_DAYS` y `PRICE_STALE_DAYS`; consulta `.env.example`.
 
+## Descubrir oportunidades afiliadas
+
+1. Configura un comercio, una red y un programa real desde **Programas**.
+2. Marca la afiliación como aprobada solamente después de recibir la aprobación.
+3. Completa tracking ID, parámetro requerido, fecha de verificación y habilita
+   Descubrimiento.
+4. Abre **Descubrimiento**, indica el país ISO y consulta las tendencias.
+5. Revisa el contexto, prepara el producto y usa la URL afiliada exacta de la red.
+6. Conserva inicialmente el producto como borrador y comprueba la atribución antes
+   de publicarlo.
+
+La guía completa está en
+[Descubrimiento_Afiliado.md](Descubrimiento_Afiliado.md). Esta función consulta
+Google Trends, pero no visita comercios, no crea cuentas afiliadas ni garantiza una
+comisión.
+
 ## Importar conversiones
 
 1. Descarga el informe CSV desde la red de afiliación.

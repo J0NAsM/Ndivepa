@@ -14,6 +14,14 @@ Visitante → Ndivepa → producto/oferta → enlace afiliado → comercio exter
                               conversión / comisión importada o recibida
 ```
 
+Flujo administrativo de descubrimiento:
+
+```text
+Google Trends RSS → oportunidad + contexto → revisión administrativa
+                  → programa aprobado + URL afiliada validada
+                  → producto borrador → publicación opcional
+```
+
 ## Principios de negocio
 
 - `AFFILIATE` es el modo de monetización activo.
@@ -22,6 +30,10 @@ Visitante → Ndivepa → producto/oferta → enlace afiliado → comercio exter
 - Ventas atribuidas, comisión pendiente, aprobada y pagada son métricas distintas.
 - Un enlace jamás se modifica para añadir UTMs, SubIDs o redirecciones sin reglas explícitas del programa.
 - Toda oferta muestra una divulgación de afiliado.
+- Una tendencia es una señal de demanda reciente, no prueba de que exista un
+  producto, intención de compra ni garantía de comisión.
+- Solo un programa aprobado por su proveedor y con tracking real verificado puede
+  importar oportunidades desde Descubrimiento.
 
 ## Dominios actuales
 

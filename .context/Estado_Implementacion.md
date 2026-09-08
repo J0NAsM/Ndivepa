@@ -44,10 +44,11 @@ Todas partían de un defecto observable, no de una preferencia de estilo.
 
 Desde un repositorio sin `data/db.json`:
 
-- `npm run lint`: 83 ficheros, sin incidencias (sintaxis, importaciones locales, dependencias declaradas, restos de depuración).
+- `npm run lint`: 85 ficheros, sin incidencias (sintaxis, importaciones locales, dependencias declaradas, restos de depuración).
 - `npm run verify`: integridad referencial, invariantes y conformidad de módulos sin incidencias.
-- `npm test`: 41 pruebas correctas — 24 de extremo a extremo sobre HTTP y 17 del framework (almacenamiento, configuración, CSRF, identificador de correlación, estáticos).
-- `npm run check` encadena las tres.
+- `npm test`: 78/78 pruebas correctas, incluidas regresiones de descubrimiento, tracking, metadatos, autenticación, HTTP y persistencia.
+- `npm run audit:dependencies`: 0 vulnerabilidades encontradas en las dependencias instaladas.
+- `npm run check:full` encadena análisis, verificación, pruebas y auditoría de dependencias.
 
 La imagen de Docker no se pudo construir en este equipo porque no hay Docker
 instalado; se comprobó reproduciendo su manifiesto de ficheros y arrancando el
@@ -62,3 +63,6 @@ No se activan pagos, SMTP, S3/CDN, búsqueda externa ni conectores empresariales
 Los identificadores de afiliado del catálogo de demostración (`ndivepademo-20`,
 `NDIVEPADEMO`, `ndivepademo`) son ficticios y están marcados como tales en las
 notas de cada programa. Sustitúyelos por los reales antes de publicar.
+
+El registro detallado de la intervención, incluidas las pruebas aisladas y el
+estado externo pendiente, está en [Registro_De_Cambios.md](Registro_De_Cambios.md).

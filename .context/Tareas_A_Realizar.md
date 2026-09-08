@@ -8,6 +8,12 @@ Este archivo es el checklist operativo del proyecto. Cada mejora se marca al ter
   - Completado: hero editorial, principios de confianza, pie con divulgación y diseño responsive.
 - [x] Incorporar descubrimiento de catálogo.
   - Completado: búsqueda, filtros por categoría, ordenamiento y estado vacío.
+- [x] Incorporar descubrimiento administrativo de oportunidades afiliadas.
+  - Completado: Google Trends RSS por país, contexto, clasificación prudente,
+    programas elegibles/bloqueados e importación validada de producto y enlace.
+- [ ] **No realizable sin acceso externo:** automatizar la incorporación desde feeds
+  oficiales de comercios o redes. Motivo: cada proveedor debe aprobar la cuenta y
+  entregar API/feed, credenciales, tracking y términos de uso.
 - [x] Incorporar favoritos locales sin pedir una cuenta al visitante.
 - [x] Crear ficha informativa previa a la salida al comercio.
   - Completado: detalle con precio, comercio, validación del enlace y divulgación afiliada.

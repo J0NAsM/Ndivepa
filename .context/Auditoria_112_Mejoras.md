@@ -136,7 +136,7 @@ servicios que necesitan cuentas o decisiones externas se enumeran aparte.
 
 ## Evidencia de verificación
 
-- `npm run lint`: 84 archivos, sin incidencias.
+- `npm run lint`: 85 archivos, sin incidencias.
 - `npm test`: 78/78 pruebas superadas.
 - `npm run verify`: comprueba integridad referencial, invariantes y conformidad.
 - `npm run audit:dependencies`: bloquea vulnerabilidades altas o críticas en dependencias de producción.

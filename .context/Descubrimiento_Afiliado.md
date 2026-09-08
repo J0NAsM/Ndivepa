@@ -63,3 +63,16 @@ DISCOVERY_CACHE_TTL_MS=600000
 
 Desactiva `FEATURE_TREND_DISCOVERY` si la instalación no debe realizar esta
 consulta saliente.
+
+## Implementación y evidencia
+
+- Servicio y parser: `src/modules/affiliate/trends.js`.
+- Elegibilidad, permisos e importación: `src/modules/affiliate/index.js`.
+- Interfaz administrativa: `public/app.js` y `public/styles.css`.
+- Pruebas de regresión: `test/hardening.test.js` y `test/http.test.js`.
+- Registro completo de la intervención:
+  [Registro_De_Cambios.md](Registro_De_Cambios.md).
+
+La última verificación documentada terminó con 78/78 pruebas correctas, análisis
+estático de 85 archivos sin incidencias y 0 vulnerabilidades encontradas por la
+auditoría de dependencias.
