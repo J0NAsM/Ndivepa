@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "PROJECT_ID": "ndivepa",
+  "PROJECT_NAME": "Ndivepa",
+  "TYPE": "web",
+  "TECH_STACK": "Node/HTML/JS; JSON local; incluye GraphQL",
+  "TECH_STACK_SOURCE": [
+    "package.json"
+  ],
+  "ENVIRONMENT": "NO DETERMINADO",
+  "STATUS": "NO DETERMINADO",
+  "OBSERVED_STATE": "Plataforma de afiliación en desarrollo.",
+  "VERSION_SOURCE": [
+    "package.json"
+  ],
+  "LAST_CONTEXT_UPDATE": "2026-09-14",
+  "LAST_VALIDATION": {
+    "date": "NO DETERMINADO",
+    "revision": "NO DETERMINADO",
+    "command": "NO DETERMINADO",
+    "result": "NO DETERMINADO"
+  },
+  "LAST_DEPLOY": "NO DETERMINADO",
+  "EXTERNAL_DEPENDENCIES": "Node; fuentes y redes de afiliación externas.",
+  "CONFIG_SOURCES": [
+    "docker-compose.yml",
+    "Dockerfile",
+    ".github/workflows/quality.yml"
+  ],
+  "SOURCE_HASHES": {
+    "package.json": "ae48bfb203bb2889c56ddf5ac941f9b3d407749b5ee63aad8971ff80244e038a",
+    "docker-compose.yml": "939b7667fcbf4481f092ec2bae145e3e5067be2b930fc879004f701b0592ce99",
+    "Dockerfile": "be86473197759bf2cf49fc7db1457fea85df9b9752139b13c3cc858ae6cc265b",
+    ".github/workflows/quality.yml": "3dbb3899638e1831b6ca668dd22f501402a34d91308d620a19938f121119df57"
+  },
+  "VAULTS_ROOT_RELATIVE": "../Vaults/jmartinez"
+}

@@ -1,3 +1,7 @@
+<!-- BEGIN ECOSYSTEM CURRENT -->
+Las referencias a instalación de Docker o estado Git son fotografías fechadas. La auditoría detectó CLI Docker/Compose instalada pero daemon no disponible; no afirmar ejecución de contenedores. Consultar contexto.md para estado y reglas vigentes.
+<!-- END ECOSYSTEM CURRENT -->
+
 # Backlog de mejoras · M-0001 … M-1040
 
 Lista numerada y accionable. Cada línea es una mejora verificable. El orden sigue

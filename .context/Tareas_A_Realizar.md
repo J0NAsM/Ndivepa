@@ -1,3 +1,7 @@
+<!-- BEGIN ECOSYSTEM CURRENT -->
+Las referencias a instalación de Docker o estado Git son fotografías fechadas. La auditoría detectó CLI Docker/Compose instalada pero daemon no disponible; no afirmar ejecución de contenedores. Consultar contexto.md para estado y reglas vigentes.
+<!-- END ECOSYSTEM CURRENT -->
+
 # Hoja de ruta de Ndivepa
 
 Este archivo es el checklist operativo del proyecto. Cada mejora se marca al terminarse y se acompaña de una nota breve para que el estado no dependa de la conversación.

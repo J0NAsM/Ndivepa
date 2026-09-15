@@ -1,3 +1,7 @@
+<!-- BEGIN ECOSYSTEM ENTRY -->
+Entrada vigente: [Ndivepa — contexto](<.context/contexto.md>). Identidad, alcance, reglas y comandos se consultan desde esa entrada. La documentación histórica se conserva; sus fotografías de estado no acreditan la situación actual.
+<!-- END ECOSYSTEM ENTRY -->
+
 # Ndivepa · Inteligencia de afiliación
 
 Ndivepa administra productos afiliados, comercios, programas, enlaces, clics, conversiones y comisiones desde un único panel. La plataforma es **AFFILIATE-first**: nunca procesa la compra ni cobra al cliente; el botón de oferta deriva al comercio externo y registra el interés internamente.
