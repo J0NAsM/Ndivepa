@@ -71,7 +71,27 @@ export const DEFAULT_ROLES = [
     ],
   },
   { code: 'support', name: 'Soporte', permissions: ['order:read', 'customer:read', 'customer:update', 'return:*', 'claim:*'] },
-  { code: 'analyst', name: 'Analítica', permissions: ['analytics:read', 'order:read', 'product:read', 'conversion:read', 'commission:read'] },
+  { code: 'analyst', name: 'Analítica', permissions: ['analytics:read', 'order:read', 'product:read', 'conversion:read', 'commission:read', 'marketplace:read'] },
+  // Marketplace (v4). Compradores, vendedores y proveedores NO son roles de
+  // personal: son capacidades de la cuenta de cliente deducidas de membresías.
+  {
+    code: 'moderator',
+    name: 'Moderación',
+    permissions: [
+      'review:*', 'question:*', 'post:*', 'report:*', 'message:*', 'conversation:*', 'feedItem:*',
+      'product:read', 'product:update', 'seller:read', 'inboxNotification:*',
+    ],
+  },
+  {
+    code: 'marketplace_manager',
+    name: 'Gestión del marketplace',
+    permissions: [
+      'marketplace:*', 'seller:*', 'sellerMember:*', 'sellerApplication:*', 'sellerPlan:*', 'commissionRule:*',
+      'vendorOrder:*', 'ledgerEntry:read', 'sellerPayout:*', 'locality:*', 'supplier:*', 'supplierMember:*',
+      'supplierProduct:*', 'supplierOrder:*', 'adCampaign:*', 'adEvent:read', 'product:*', 'variant:*',
+      'category:*', 'order:read', 'analytics:read', 'inboxNotification:*', 'report:read',
+    ],
+  },
 ];
 
 export class Rbac {

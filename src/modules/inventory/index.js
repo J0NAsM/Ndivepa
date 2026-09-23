@@ -438,6 +438,17 @@ export class InventoryService {
     return { consumed: targets.length };
   }
 
+  /**
+   * Ubicación desde la que se despachó una línea, según su reserva consumida.
+   * Una devolución debe volver al stock de quien la vendió, no al depósito propio.
+   */
+  soldLocationFor(reference, lineItemId) {
+    const reservation = this.reservations.repository
+      .all({ reference })
+      .find(row => row.lineItemId === lineItemId && ['consumed', 'active'].includes(row.status));
+    return reservation?.locationId || null;
+  }
+
   /** Ajuste manual con motivo obligatorio (M-0503). */
   async adjust({ inventoryItemId, locationId, delta, reason, type = 'adjustment' }, ctx = null) {
     if (!reason) throw ValidationError.single('reason', 'Todo ajuste de stock necesita un motivo.');

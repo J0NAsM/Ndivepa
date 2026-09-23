@@ -15,6 +15,7 @@ import { TrendsDiscoveryService } from './trends.js';
 import { percentage, toMinor } from '../../framework/money.js';
 import { ageInDays, now, toDate, DAY } from '../../framework/dates.js';
 import { humanCode } from '../../framework/ids.js';
+import { GenericPostbackAdapter } from '../marketplace/adapters.js';
 
 export const CONVERSION_STATUSES = ['pending', 'approved', 'rejected', 'paid'];
 export const CONVERSION_TRANSITIONS = {
@@ -1154,5 +1155,70 @@ export default {
         },
       ];
     },
+
+    /**
+     * Postback de conversión firmado por la red (v4).
+     *
+     * Registra la conversión **solo** con evidencia del proveedor: firma HMAC
+     * válida y marca de tiempo reciente. Nace pendiente salvo que la red informe
+     * aprobación o rechazo; la plataforma nunca la supone confirmada.
+     */
+    store: container => [
+      {
+        method: 'POST',
+        path: '/affiliate/postbacks/:networkId',
+        permission: null,
+        csrf: false,
+        summary: 'Postback firmado de una red de afiliación (HMAC-SHA256 sobre timestamp.cuerpo).',
+        tags: ['afiliación'],
+        body: {
+          conversionId: rule.text(120, { required: true }),
+          clickId: rule.text(60),
+          programId: rule.id(),
+          saleAmount: rule.minor(),
+          commission: rule.minor(),
+          currency: rule.currency(),
+          status: rule.enumOf(['pending', 'approved', 'rejected']),
+          occurredAt: rule.date(),
+        },
+        handler: async ctx => {
+          const affiliate = container.resolve('affiliate');
+          const network = affiliate.networks.repository.byId(ctx.params.networkId);
+          if (!network) throw ValidationError.single('networkId', 'Red desconocida.');
+          const adapter = new GenericPostbackAdapter({ secret: process.env.AFFILIATE_POSTBACK_SECRET || null });
+          const valid = adapter.verify({
+            rawBody: ctx.req.ndivepaRawBody || '',
+            timestamp: ctx.req.headers['x-ndivepa-timestamp'],
+            signature: ctx.req.headers['x-ndivepa-signature'],
+          });
+          if (!valid) throw ValidationError.single('signature', 'La firma del postback no es válida o expiró.');
+          const data = adapter.translate(ctx.body);
+          let conversion = affiliate.conversions.repository.find({ networkConversionId: data.networkConversionId });
+          if (!conversion) {
+            const click = data.clickId ? container.resolve('store').collection('events').find(event => event.type === 'affiliate_click' && event.clickId === data.clickId) : null;
+            conversion = await affiliate.conversions.create({
+              networkConversionId: data.networkConversionId,
+              clickId: data.clickId,
+              networkId: network.id,
+              programId: ctx.body.programId || click?.programId || null,
+              productId: click?.productId || null,
+              merchantId: click?.merchantId || null,
+              date: data.date || now(),
+              saleAmount: data.saleAmount ?? undefined,
+              saleCurrency: data.saleCurrency || undefined,
+              commission: data.commission ?? undefined,
+              commissionCurrency: data.saleCurrency || undefined,
+              status: 'pending',
+              source: 'postback',
+            });
+          }
+          if (data.reportedStatus === 'approved' && conversion.status === 'pending') conversion = await affiliate.conversions.approve(conversion.id);
+          if (data.reportedStatus === 'rejected' && ['pending', 'approved'].includes(conversion.status)) {
+            conversion = await affiliate.conversions.reject(conversion.id, 'Rechazada por la red (postback)');
+          }
+          return { received: true, conversionId: conversion.id, status: conversion.status, attributed: Boolean(conversion.attribution?.attributed) };
+        },
+      },
+    ],
   },
 };

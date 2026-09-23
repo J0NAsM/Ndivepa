@@ -33,7 +33,26 @@ export const COLLECTIONS = [
   'storeCreditAccounts', 'storeCreditTransactions',
   'audits', 'events', 'notifications', 'translations', 'jobs', 'webhooks',
   'webhookDeliveries', 'workflowRuns', 'imports',
+  // Marketplace (v4): localidades, tiendas, pedidos por vendedor y finanzas.
+  'localities', 'sellerMembers', 'sellerApplications', 'sellerPlans', 'commissionRules', 'searchSynonyms',
+  'stockAlerts',
+  'vendorOrders', 'ledgerEntries', 'sellerPayouts',
+  // Comunidad (v4).
+  'favorites', 'likes', 'follows', 'reviews', 'questions', 'posts', 'feedItems',
+  'reports', 'conversations', 'messages', 'inboxNotifications',
+  // Dropshipping y publicidad interna (v4).
+  'suppliers', 'supplierMembers', 'supplierProducts', 'supplierOrders',
+  'adCampaigns', 'adEvents',
 ];
+
+/** Modelos comerciales conocidos por la migración v4 (el registro vivo está en el catálogo). */
+function inferCommercialModel(product) {
+  if (product.commercialModel) return product.commercialModel;
+  if (product.monetizationType === 'AFFILIATE') return 'AFILIADO';
+  if (product.supplierId) return 'DROPSHIPPING';
+  if (product.sellerId) return 'LOCAL';
+  return 'PROPIO';
+}
 
 /**
  * v1 -> v2: del esquema `affiliate-v1` al modelo modular.
@@ -354,6 +373,44 @@ function migrateV2toV3(state) {
 }
 
 /**
+ * v3 -> v4: marketplace multivendedor.
+ *
+ * Solo **añade**: colecciones nuevas vacías, el modelo comercial explícito de cada
+ * producto (deducido de lo que ya era) y los campos de tienda de los vendedores
+ * existentes. No cambia importes, estados ni identificadores.
+ */
+function migrateV3toV4(state) {
+  const data = { ...state };
+  for (const collection of COLLECTIONS) {
+    if (!Array.isArray(data[collection])) data[collection] = [];
+  }
+  data.products = data.products.map(product => ({
+    ...product,
+    sellerId: product.sellerId ?? null,
+    supplierId: product.supplierId ?? null,
+    localityId: product.localityId ?? null,
+    commercialModel: inferCommercialModel(product),
+    deliveryModes: Array.isArray(product.deliveryModes) ? product.deliveryModes : [],
+  }));
+  data.sellers = data.sellers.map(seller => ({
+    ...seller,
+    description: seller.description ?? null,
+    localityId: seller.localityId ?? null,
+    categoryIds: Array.isArray(seller.categoryIds) ? seller.categoryIds : [],
+    deliveryModes: Array.isArray(seller.deliveryModes) ? seller.deliveryModes : [],
+    location: seller.location || { area: null, public: false, lat: null, lng: null },
+    social: seller.social || {},
+    hours: Array.isArray(seller.hours) ? seller.hours : [],
+  }));
+  // Filas sembradas antes de la v4 sin `active`: el esquema dice que por defecto
+  // están activas, pero los filtros `{ active: true }` las descartaban.
+  for (const collection of ['zones', 'regions', 'countries', 'provinces', 'stockLocations', 'channels', 'serviceZones']) {
+    data[collection] = data[collection].map(row => (row.active === undefined ? { ...row, active: true } : row));
+  }
+  return data;
+}
+
+/**
  * Registra todas las migraciones en el store.
  * @param {import('./framework/store.js').Store} store
  */
@@ -384,6 +441,13 @@ export function registerMigrations(store) {
     to: 3,
     description: 'Asegura las colecciones nuevas sin tocar los datos existentes.',
     up: migrateV2toV3,
+  });
+
+  store.migration({
+    from: 3,
+    to: 4,
+    description: 'Marketplace: colecciones de tiendas, comunidad, dropshipping y publicidad; modelo comercial por producto.',
+    up: migrateV3toV4,
   });
 
   return store;

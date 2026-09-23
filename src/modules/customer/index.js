@@ -239,6 +239,15 @@ export class CustomerService extends BaseService {
     return this.customerFromSession(ctx.cookies[ctx.config.session.customerCookieName]);
   }
 
+  /** Identificador de la sesión de cliente, sin cargar el registro completo. */
+  customerIdFromRequest(ctx) {
+    const token = ctx.cookies[ctx.config.session.customerCookieName];
+    if (!token) return null;
+    const session = this.sessions.repository.find({ token });
+    if (!session || (toDate(session.expiresAt)?.getTime() ?? 0) <= Date.now()) return null;
+    return session.customerId;
+  }
+
   async revokeSession(token) {
     const session = this.sessions.repository.find({ token });
     if (session) await this.store.transaction(state => this.sessions.repository.remove(state, session.id));
@@ -466,9 +475,19 @@ export class CustomerService extends BaseService {
   }
 }
 
+/**
+ * Identifica la sesión de cliente para los límites de petición (M-1030).
+ * No crea `actor`: una cuenta de tienda no abre ninguna ruta con permiso.
+ */
+export const customerAuthenticator = container => ctx => {
+  const customerId = container.resolve('customer').customers.customerIdFromRequest(ctx);
+  return customerId ? { customerId } : null;
+};
+
 export default {
   name: 'customer',
   requires: ['store', 'events', 'audit', 'config', 'customFields', 'geography', 'notifications'],
+  customerAuthenticator,
   resources: [customerGroupResource, addressResource, customerResource, customerSessionResource],
   permissions: [
     { resource: 'customer', description: 'Clientes.' },

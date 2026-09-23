@@ -34,6 +34,9 @@ export const cartResource = defineResource({
     shippingAddress: { type: 'object', shape: {}, allowUnknown: true },
     billingAddress: { type: 'object', shape: {}, allowUnknown: true },
     shippingMethod: { type: 'object', shape: {}, allowUnknown: true },
+    // Envío por responsable (v4): una entrega por tienda, proveedor o plataforma.
+    // Se conserva `shippingMethod` para el flujo de un solo envío.
+    shippingMethods: { type: 'array', default: [] },
     appliedPromotions: { type: 'array', default: [] },
     couponCodes: rule.list({ type: 'string' }, { default: [] }),
     giftCardCodes: rule.list({ type: 'string' }, { default: [] }),
@@ -63,6 +66,10 @@ export const cartResource = defineResource({
     abandonedAt: rule.date(),
     lastActivityAt: rule.date(),
     recoveryToken: rule.text(120),
+    // Un solo recordatorio por carrito: la fecha evita insistirle a la misma
+    // persona cada vez que corre el trabajo.
+    recoveryRemindedAt: rule.date(),
+    recoveredAt: rule.date(),
     metadata: rule.metadata(),
   },
 });
@@ -84,6 +91,7 @@ export class CartService extends BaseService {
     this.loyalty = deps.loyalty;
     this.locks = deps.locks;
     this.config = deps.config;
+    this.notifications = deps.notifications;
   }
 
   assertEnabled() {
@@ -211,6 +219,11 @@ export class CartService extends BaseService {
           facetValueIds: product.facetValueIds || [],
           requiresShipping: variant.manageInventory && product.type === 'physical',
           shippingProfileId: product.shippingProfileId || null,
+          // Marketplace: quién vende y despacha la línea. Las promociones de una
+          // tienda se acotan con `targetRules` sobre `sellerId`.
+          sellerId: product.sellerId || null,
+          supplierId: product.supplierId || null,
+          commercialModel: product.commercialModel || null,
           adjustments: [],
           taxLines: [],
           giftWrap: null,
@@ -266,6 +279,14 @@ export class CartService extends BaseService {
       ...(email ? { email } : {}),
       lastActivityAt: now(),
     }));
+    return this.recalculate(cartId, ctx);
+  }
+
+  /** Métodos de envío por grupo del carrito (uno por tienda o proveedor). */
+  async setShippingMethods(cartId, shippingMethods, ctx = null) {
+    this.assertEnabled();
+    this.retrieveActive(cartId);
+    await this.store.transaction(state => this.repository.patch(state, cartId, { shippingMethods, shippingMethod: null, lastActivityAt: now() }));
     return this.recalculate(cartId, ctx);
   }
 
@@ -419,7 +440,9 @@ export class CartService extends BaseService {
     }
 
     const subtotal = items.reduce((sum, item) => sum + item.total, 0);
-    const shippingBase = Number(cart.shippingMethod?.amount || 0);
+    const shippingBase = (cart.shippingMethods || []).length
+      ? (cart.shippingMethods || []).reduce((sum, method) => sum + Number(method.amount || 0), 0)
+      : Number(cart.shippingMethod?.amount || 0);
 
     // Promociones.
     const promotionResult = this.promotion.promotions.apply({
@@ -595,6 +618,50 @@ export class CartService extends BaseService {
     return expected === signature ? cart : null;
   }
 
+  /**
+   * Retoma un carrito abandonado desde su enlace firmado. Vuelve a ponerlo
+   * activo y lo recalcula, porque los precios y el stock pueden haber cambiado
+   * desde que la persona lo dejó: es preferible que lo vea ahora y no al pagar.
+   */
+  async recover(cartId, signature, ctx = null) {
+    const cart = this.verifyRecovery(cartId, signature);
+    if (!cart) throw new NotFoundError('carrito', cartId);
+    if (cart.status === 'completed') throw new ConflictError('Ese carrito ya se convirtió en un pedido.', { cartId });
+    if (cart.status !== 'active') {
+      await this.store.transaction(state => {
+        this.repository.patch(state, cart.id, { status: 'active', abandonedAt: null, recoveredAt: now(), lastActivityAt: now() });
+      });
+      await this.events.emit('cart.recovered', { cartId: cart.id });
+    }
+    return this.recalculate(cart.id, ctx);
+  }
+
+  /**
+   * Recordatorio de carrito abandonado (M-0603). Solo a quien dejó su correo,
+   * una sola vez, y con el enlace firmado que lo devuelve a su selección.
+   */
+  async sendRecoveryReminders({ limit = 50 } = {}) {
+    const baseUrl = this.config.publicBaseUrl || '';
+    const candidates = this.repository
+      .all({ status: 'abandoned' })
+      .filter(cart => cart.email && (cart.items || []).length > 0 && !cart.recoveryRemindedAt)
+      .slice(0, limit);
+    let sent = 0;
+    for (const cart of candidates) {
+      await this.notifications?.send({
+        template: 'cart.abandoned',
+        to: cart.email,
+        entityId: cart.id,
+        data: { items: (cart.items || []).length, link: this.recoveryLink(cart, baseUrl) },
+      });
+      await this.store.transaction(state => {
+        this.repository.patch(state, cart.id, { recoveryRemindedAt: now() });
+      });
+      sent += 1;
+    }
+    return { sent };
+  }
+
   /** Reserva el stock del carrito durante el checkout. */
   async reserveStock(cart, ctx = null) {
     const reservations = [];
@@ -617,7 +684,7 @@ export class CartService extends BaseService {
     const carts = this.repository.all();
     const stage = cart => {
       if (cart.status === 'completed') return 'completed';
-      if (cart.shippingMethod?.amount !== undefined) return 'shipping_selected';
+      if (cart.shippingMethod?.amount !== undefined || (cart.shippingMethods || []).length) return 'shipping_selected';
       if (cart.shippingAddress?.address1) return 'address_entered';
       if ((cart.items || []).length) return 'items_added';
       return 'created';
@@ -652,6 +719,7 @@ export default {
   requires: [
     'store', 'events', 'audit', 'config', 'customFields', 'settings', 'catalog', 'pricing',
     'inventory', 'tax', 'geography', 'channel', 'customer', 'promotion', 'loyalty', 'locks',
+    'notifications',
   ],
   resources: [cartResource],
   permissions: [{ resource: 'cart', description: 'Carritos de compra.' }],
@@ -665,6 +733,11 @@ export default {
       name: 'cart.mark-abandoned',
       everyMs: 60 * 60_000,
       handler: () => container.resolve('cart').markAbandoned(),
+    },
+    {
+      name: 'cart.recovery-reminder',
+      everyMs: 60 * 60_000,
+      handler: () => container.resolve('cart').sendRecoveryReminders(),
     },
   ],
 
@@ -698,6 +771,16 @@ export default {
       const cartOf = ctx => service().publicView(service().repository.retrieve(ctx.params.id));
       const customerId = ctx => container.resolve('customer').customers.customerFromRequest(ctx)?.id || null;
       return [
+        {
+          method: 'POST',
+          path: '/carts/recover',
+          permission: null,
+          csrf: false,
+          summary: 'Retoma un carrito abandonado desde su enlace firmado.',
+          tags: ['store'],
+          body: { cart: rule.id({ required: true }), token: rule.text(64, { required: true }) },
+          handler: async ctx => service().publicView(await service().recover(ctx.body.cart, ctx.body.token, ctx)),
+        },
         {
           method: 'POST',
           path: '/carts',

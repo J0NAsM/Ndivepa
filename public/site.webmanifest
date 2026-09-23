@@ -1,14 +1,22 @@
 {
-  "name": "Ndivepa",
+  "name": "Ndivepa · Comercio local",
   "short_name": "Ndivepa",
-  "description": "Recomendaciones afiliadas transparentes.",
+  "description": "Marketplace y comunidad de comercios, emprendedores y artesanos locales.",
   "lang": "es-PY",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f6f8fc",
-  "theme_color": "#111b33",
+  "orientation": "portrait-primary",
+  "background_color": "#faf7f2",
+  "theme_color": "#1f5a4a",
+  "categories": ["shopping", "business"],
   "icons": [
-    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Buscar productos", "url": "/buscar" },
+    { "name": "Tiendas locales", "url": "/tiendas" },
+    { "name": "Mi tienda", "url": "/mi-tienda" }
   ]
 }

@@ -238,6 +238,10 @@ export class ShippingOptionService extends BaseService {
           amount: this.priceFor(option, { subtotal, itemCount, weight }),
           currencyCode: option.currencyCode || currencyCode,
           taxable: option.taxable !== false,
+          // El umbral real de envío gratis: la tienda puede decir «te faltan X»
+          // con la misma configuración con la que después cobra.
+          priceType: option.priceType,
+          freeOverAmount: option.priceType === 'free_over' ? option.freeOverAmount ?? null : null,
           estimatedDaysMin: serviceZone?.estimatedDaysMin ?? null,
           estimatedDaysMax: serviceZone?.estimatedDaysMax ?? null,
           requiresCredentials: option.provider === 'external',

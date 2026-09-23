@@ -403,7 +403,10 @@ export class OrderService extends BaseService {
       })),
       shippingAddress: cart.shippingAddress || {},
       billingAddress: cart.billingAddress || cart.shippingAddress || {},
-      shippingMethods: cart.shippingMethod ? [{ ...cart.shippingMethod, id: generateId('smeth') }] : [],
+      // Un método por grupo cuando el carrito los define; si no, el único método.
+      shippingMethods: (cart.shippingMethods || []).length
+        ? cart.shippingMethods.map(method => ({ ...method, id: method.id || generateId('smeth') }))
+        : cart.shippingMethod ? [{ ...cart.shippingMethod, id: generateId('smeth') }] : [],
       surcharges: cart.surcharges || [],
       appliedPromotions: cart.appliedPromotions || [],
       taxBreakdown: cart.taxBreakdown || [],
@@ -418,8 +421,11 @@ export class OrderService extends BaseService {
     }, ctx);
 
     // División por vendedor para marketplace (M-0630).
+    // El vendedor de la línea manda; el del canal queda como compatibilidad v0.2.
     const breakdown = this.channel.sellers.splitOrder(order, item => {
+      if (item.sellerId) return item.sellerId;
       const product = this.catalog.products.repository.byId(item.productId);
+      if (product?.sellerId) return product.sellerId;
       const channel = product?.channelIds?.[0] ? this.channel.channels.repository.byId(product.channelIds[0]) : null;
       return channel?.sellerId || null;
     });
@@ -739,8 +745,17 @@ export class ReturnService extends BaseService {
   async request(input, ctx = null) {
     const order = this.orders.repository.retrieve(input.orderId);
     this.assertWithinWindow(order);
-    if (!['shipped', 'delivered', 'completed'].includes(order.status)) {
-      throw new ConflictError('Solo se puede devolver un pedido enviado o entregado.', { status: order.status });
+    // En un pedido multivendedor, una tienda puede haber entregado y otra no: se
+    // devuelve lo que ya se recibió, aunque el pedido siga abierto.
+    const orderDelivered = ['shipped', 'delivered', 'completed'].includes(order.status);
+    if (!orderDelivered) {
+      const pendingDelivery = input.items.filter(item => {
+        const line = (order.items || []).find(entry => entry.id === item.lineItemId);
+        return !line || Number(line.fulfilledQuantity || 0) < item.quantity;
+      });
+      if (pendingDelivery.length) {
+        throw new ConflictError('Solo se puede devolver lo que ya recibiste.', { status: order.status });
+      }
     }
     for (const item of input.items) {
       const line = (order.items || []).find(entry => entry.id === item.lineItemId);
@@ -772,6 +787,8 @@ export class ReturnService extends BaseService {
     if (record.status !== 'requested') throw new InvalidStateError('la devolución', record.status, 'approved', ['requested']);
     const result = await this.store.transaction(state => this.repository.patch(state, returnId, { status: 'approved', approvedAt: now() }));
     await this.history.log({ orderId: record.orderId, type: 'return_approved', message: 'Devolución aprobada.', internal: false }, ctx);
+    // Cada decisión emite su evento y queda auditada: antes solo se veía en el historial.
+    await this.emit('approved', result.after, ctx, record);
     return result.after;
   }
 
@@ -786,6 +803,7 @@ export class ReturnService extends BaseService {
       closedAt: now(),
     }));
     await this.history.log({ orderId: record.orderId, type: 'return_rejected', message: `Devolución rechazada: ${reason}.`, internal: false }, ctx);
+    await this.emit('rejected', result.after, ctx, record);
     return result.after;
   }
 
@@ -818,10 +836,13 @@ export class ReturnService extends BaseService {
 
       if (restock && received > 0) {
         const requirements = this.inventory.service.requirementsFor(requested.lineItemId ? line.variantId : null);
+        // El stock vuelve a la ubicación desde la que salió (la tienda que vendió).
+        const locationId = this.inventory.service.soldLocationFor(order.id, requested.lineItemId)
+          || this.inventory.locations.default()?.id;
         for (const requirement of requirements) {
           await this.inventory.service.adjust({
             inventoryItemId: requirement.inventoryItemId,
-            locationId: this.inventory.locations.default()?.id,
+            locationId,
             delta: requirement.quantity * received,
             reason: `Devolución ${returnId}`,
             type: 'return',
@@ -872,6 +893,7 @@ export class ReturnService extends BaseService {
       entityId: returnId,
       data: { code: order.code, amount: refundAmount },
     });
+    await this.emit('received', result.after, ctx, record);
 
     return result.after;
   }

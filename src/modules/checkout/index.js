@@ -37,7 +37,7 @@ export class CheckoutService {
       cart: (cart.items || []).length > 0,
       contact: Boolean(cart.email || cart.customerId),
       address: Boolean(cart.shippingAddress?.address1 && cart.shippingAddress?.countryCode),
-      shipping: Boolean(cart.shippingMethod) || !(cart.items || []).some(item => item.requiresShipping),
+      shipping: this.shippingReady(cart),
       payment: true,
       review: true,
     };
@@ -49,6 +49,20 @@ export class CheckoutService {
       ready: missing.length === 0,
       blockers: (cart.warnings || []).filter(warning => ['insufficient_stock', 'line_unavailable'].includes(warning.code)),
     };
+  }
+
+  /**
+   * Envío listo: con envío por tienda, cada grupo del carrito necesita su método;
+   * con el flujo de un solo envío basta con uno.
+   */
+  shippingReady(cart) {
+    if (!(cart.items || []).some(item => item.requiresShipping)) return true;
+    const methods = cart.shippingMethods || [];
+    if (!methods.length) return Boolean(cart.shippingMethod);
+    const groups = new Set((cart.items || []).map(item => (item.sellerId ? `seller:${item.sellerId}`
+      : item.supplierId ? `supplier:${item.supplierId}` : 'platform')));
+    const covered = new Set(methods.map(method => method.groupKey));
+    return [...groups].every(group => covered.has(group));
   }
 
   /** Registra el workflow una sola vez, con su compensación por paso. */

@@ -6,6 +6,8 @@ Los archivos .env reales se conservan fuera del contexto y deben estar ignorados
 
 | NOMBRE_VARIABLE | PROPÓSITO | EJEMPLO_SEGURO | REQUERIDA | FUENTES |
 |---|---|---|---|---|
+| AFFILIATE_POSTBACK_SECRET | Secreto HMAC de los postbacks de redes de afiliación (v4). Vacío = postbacks desactivados | REEMPLAZAR_LOCALMENTE | Solo si se reciben postbacks | src/modules/affiliate/index.js, .env.example |
+| DEMO_ACCOUNT_PASSWORD | Contraseña de cuentas demo del marketplace; solo con SEED_DEMO, nunca en producción | REEMPLAZAR_LOCALMENTE | No | src/marketplace-demo-seed.js, .env.example |
 | ATTRIBUTION_WINDOW_DAYS | Configuración específica; consultar el consumidor y las fuentes indicadas | NO DETERMINADO | NO DETERMINADO; verificar modo de ejecución | .env.example |
 | BACKUP_KEEP | Configuración específica; consultar el consumidor y las fuentes indicadas | NO DETERMINADO | NO DETERMINADO; verificar modo de ejecución | .env.example |
 | CDN_BASE_URL | Configuración específica; consultar el consumidor y las fuentes indicadas | NO DETERMINADO | NO DETERMINADO; verificar modo de ejecución | .env.example |

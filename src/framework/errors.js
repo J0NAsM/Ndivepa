@@ -69,8 +69,8 @@ export class ForbiddenError extends NdivepaError {
 }
 
 export class RateLimitError extends NdivepaError {
-  constructor(retryAfterSeconds = 60, limit = null) {
-    super('Demasiadas solicitudes; intenta de nuevo más tarde.', {
+  constructor(retryAfterSeconds = 60, limit = null, message = 'Demasiadas solicitudes; intenta de nuevo más tarde.') {
+    super(message, {
       code: 'rate_limited',
       status: 429,
       details: { retryAfter: retryAfterSeconds, limit },

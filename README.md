@@ -2,9 +2,50 @@
 Entrada vigente: [Ndivepa — contexto](<.context/contexto.md>). Identidad, alcance, reglas y comandos se consultan desde esa entrada. La documentación histórica se conserva; sus fotografías de estado no acreditan la situación actual.
 <!-- END ECOSYSTEM ENTRY -->
 
-# Ndivepa · Inteligencia de afiliación
+# Ndivepa · Marketplace local + inteligencia de afiliación
 
-Ndivepa administra productos afiliados, comercios, programas, enlaces, clics, conversiones y comisiones desde un único panel. La plataforma es **AFFILIATE-first**: nunca procesa la compra ni cobra al cliente; el botón de oferta deriva al comercio externo y registra el interés internamente.
+Desde la v4, Ndivepa es un **marketplace multivendedor y comunidad de comercio local**, pensado para
+empezar en Carapeguá y crecer por localidades a todo Paraguay. En un único catálogo conviven cuatro
+modelos comerciales:
+
+| Modelo | Quién vende / despacha | Botón del comprador |
+| --- | --- | --- |
+| `LOCAL` | una tienda aprobada del marketplace | Agregar al carrito |
+| `PROPIO` | la plataforma | Agregar al carrito |
+| `DROPSHIPPING` | la plataforma vende; despacha un proveedor | Agregar al carrito |
+| `AFILIADO` | un comercio externo (programa de afiliación) | Ver oferta ↗ (con aviso de salida) |
+
+El módulo de afiliación original se conserva completo (panel clásico en `/panel.html`). El marketplace
+necesita `COMMERCE_MODE=HYBRID` (o ajustarlo en *Administración → Configuración*); en `AFFILIATE`
+carrito y checkout siguen apagados, como antes.
+
+### Marketplace: rutas principales
+
+- Público: `/` portada, `/buscar`, `/categoria/:handle`, `/producto/:handle`, `/tienda/:código`, `/tiendas`,
+  `/ofertas`, `/explorar` (mapa), `/comunidad`, `/carrito`, `/checkout`.
+- Cuenta (comprador, vendedor y proveedor con la misma cuenta): `/ingresar`, `/cuenta/...`, `/vender`,
+  `/mi-tienda/:id/...`, `/cuenta/proveedor/:id`.
+- Personal (RBAC): `/admin/...`. Roles nuevos: `moderator` y `marketplace_manager`.
+- API: `/api/v1/store/marketplace/*`, `/api/v1/store/community/*`, `/api/v1/store/dropshipping/portal/*`,
+  `/api/v1/admin/marketplace/*`, `/api/v1/admin/community/*`, `/api/v1/admin/dropshipping/*`, anuncios en
+  `/api/v1/admin/ad-campaigns`. Contrato completo en `/api/docs`.
+
+### Instalable y con mala conexión
+
+La tienda pública es una PWA: se puede instalar en el celular y, sin conexión, sigue mostrando la
+aplicación y las páginas públicas ya visitadas. Nada de `/api`, carrito, cuenta, «mi tienda» ni
+administración se guarda en la caché.
+
+### Cuentas de demostración (solo desarrollo, `SEED_DEMO`)
+
+Tiendas `hamacas@demo.ndivepa.local`, `sabores@demo.ndivepa.local`, `moda@demo.ndivepa.local` y comprador
+`comprador@demo.ndivepa.local`, con la contraseña de `DEMO_ACCOUNT_PASSWORD` o, si falta,
+`Demo-Ndivepa-2026!`. Las tiendas y productos demo están marcados «(demo)» y no se crean en producción.
+
+---
+
+La parte de afiliación mantiene su regla original: en los productos `AFILIADO` Ndivepa nunca procesa la
+compra ni cobra al cliente; el botón de oferta deriva al comercio externo y registra el interés internamente.
 
 ## Iniciar localmente
 
@@ -86,7 +127,8 @@ npm run check        # estática + integridad + pruebas
 npm run check:full   # todo lo anterior + auditoría de dependencias
 npm run lint         # sintaxis, importaciones y dependencias declaradas
 npm run verify       # integridad referencial, invariantes y conformidad
-npm test             # 78 pruebas (HTTP de extremo a extremo + hardening)
+npm test             # 102 pruebas (HTTP de extremo a extremo, marketplace y hardening)
+npm run test:ui      # 8 recorridos en navegador sin cabeza (se omite si no hay Edge/Chrome)
 npm run audit:dependencies # vulnerabilidades altas/críticas de producción
 npm run doctor       # diagnóstico con recuento por colección
 ```

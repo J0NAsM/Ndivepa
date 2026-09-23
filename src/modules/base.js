@@ -323,12 +323,18 @@ export class BaseService {
 
   /** Semilla idempotente por clave natural (M-0285). */
   async seed(rows, key = 'id') {
+    // Los valores por defecto del esquema también valen para la semilla: sin
+    // ellos, filas como zonas o ubicaciones nacían sin `active` y quedaban
+    // fuera de todo filtro `{ active: true }`.
+    const fieldDefaults = Object.fromEntries(Object.entries(this.resource.fields || {})
+      .filter(([, definition]) => definition?.default !== undefined)
+      .map(([field, definition]) => [field, structuredClone(definition.default)]));
     return this.store.transaction(state => {
       const created = [];
       for (const row of rows) {
         const existing = this.repository.raw(state).find(item => item[key] === row[key]);
         if (existing) continue;
-        created.push(this.repository.insert(state, { ...this.resource.defaults, ...row }));
+        created.push(this.repository.insert(state, { ...fieldDefaults, ...this.resource.defaults, ...row }));
       }
       return created;
     });
@@ -385,6 +391,7 @@ export function crudRoutes(resource, getService, { permissionResource = resource
       summary: `Actualiza un registro de ${resource.route}.`,
       tags,
       body: resource.fields,
+      bodyPartial: true,
       handler: ctx => service(ctx).update(ctx.params.id, ctx.body, ctx),
     },
     {

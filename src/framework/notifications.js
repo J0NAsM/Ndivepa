@@ -58,10 +58,15 @@ export const TEMPLATES = {
     subject: 'Stock bajo en {sku}',
     body: 'Quedan {available} unidades de {sku} en {location}, por debajo del umbral {threshold}.',
   },
+  'stock.back': {
+    channel: 'email',
+    subject: '{product} volvió a estar disponible',
+    body: 'Lo que estabas esperando ya tiene stock: {product}. Vélo aquí: {link}',
+  },
   'cart.abandoned': {
     channel: 'email',
     subject: 'Tu selección sigue disponible',
-    body: 'Guardamos tu selección de {items} artículo(s). Puedes retomarla cuando quieras.',
+    body: 'Guardamos tu selección de {items} artículo(s). Retómala aquí: {link}',
   },
   'link.invalid': {
     channel: 'inapp',
@@ -72,6 +77,12 @@ export const TEMPLATES = {
     channel: 'inapp',
     subject: 'Precio sin verificar en {product}',
     body: 'El precio de {product} se verificó hace {days} días. Revísalo antes de destacarlo.',
+  },
+  // Aviso genérico del marketplace: el texto lo compone el módulo que notifica.
+  'marketplace.notice': {
+    channel: 'email',
+    subject: '{title}',
+    body: '{body} Más información en {link}.',
   },
   'commission.unpaid': {
     channel: 'inapp',

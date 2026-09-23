@@ -61,6 +61,9 @@ export class HttpApp {
         ctx.session = result.session || ctx.session;
         ctx.apiKey = result.apiKey || ctx.apiKey;
         ctx.channelId = result.channelId || ctx.channelId;
+        // Identifica al cliente de tienda sin darle actor: no abre ninguna ruta con
+        // permiso, solo permite contar sus peticiones por cuenta y no por IP.
+        ctx.customerId = result.customerId || ctx.customerId;
         if (result.stop) break;
       }
     }
@@ -153,7 +156,9 @@ export class HttpApp {
           maxDepth: this.config.security.maxJsonDepth,
         });
       }
-      if (route.body) ctx.validateBody(route.body);
+      // Un PATCH modifica solo lo enviado: el esquema sigue rechazando campos
+      // desconocidos y tipos inválidos, pero no exige los obligatorios.
+      if (route.body) ctx.validateBody(route.body, route.bodyPartial ? { partial: true } : {});
 
       if (route.csrf !== false) assertCsrf(ctx);
       if (route.permission) {

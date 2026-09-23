@@ -12,6 +12,8 @@ import { token as generateToken } from '../../framework/ids.js';
 import { mask, safeEqual } from '../../framework/strings.js';
 import { distribute, percentage } from '../../framework/money.js';
 
+export const SELLER_STATUSES = ['pending', 'active', 'suspended', 'rejected'];
+
 export const channelResource = defineResource({
   name: 'channel',
   collection: 'channels',
@@ -54,10 +56,57 @@ export const sellerResource = defineResource({
     contactPhone: rule.text(40),
     website: rule.url(),
     // Comisión que retiene la plataforma sobre las ventas del vendedor (M-0238).
+    // Se conserva por compatibilidad; las reglas de `commissionRules` la sustituyen.
     commissionPercent: rule.percent({ default: 0 }),
     commissionFlat: rule.minor({ default: 0 }),
     payoutCurrency: rule.currency(),
-    status: rule.enumOf(['pending', 'active', 'suspended'], { default: 'pending' }),
+    // Estados del ciclo del marketplace: PENDIENTE, APROBADO (`active`), RECHAZADO, SUSPENDIDO.
+    status: rule.enumOf(SELLER_STATUSES, { default: 'pending' }),
+    // --- Perfil público de tienda (v4) ---------------------------------------
+    type: rule.enumOf(['commerce', 'artisan', 'entrepreneur', 'services', 'platform'], { default: 'commerce' }),
+    tagline: rule.text(160),
+    description: rule.text(3000),
+    logoUrl: rule.text(500),
+    bannerUrl: rule.text(500),
+    categoryIds: rule.list({ type: 'string' }, { default: [] }),
+    localityId: rule.id(),
+    // La dirección exacta es privada; `public` decide si se muestra el punto en el mapa.
+    location: {
+      type: 'object',
+      shape: {
+        area: rule.text(120),
+        address: rule.text(200),
+        public: rule.flag({ default: false }),
+        lat: { type: 'number', coerce: true, min: -90, max: 90 },
+        lng: { type: 'number', coerce: true, min: -180, max: 180 },
+      },
+    },
+    hours: rule.list({
+      type: 'object',
+      shape: {
+        day: rule.enumOf(['lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'], { required: true }),
+        opens: { type: 'string', pattern: /^([01]\d|2[0-3]):[0-5]\d$/, patternMessage: 'Formato HH:MM.' },
+        closes: { type: 'string', pattern: /^([01]\d|2[0-3]):[0-5]\d$/, patternMessage: 'Formato HH:MM.' },
+        closed: rule.flag({ default: false }),
+      },
+    }, { default: [], unique: false }),
+    social: {
+      type: 'object',
+      shape: {
+        instagram: rule.text(80),
+        facebook: rule.text(120),
+        tiktok: rule.text(80),
+        whatsapp: { type: 'string', maxLength: 20, pattern: /^\+?[0-9 ]{6,20}$/, patternMessage: 'Solo dígitos y +.' },
+      },
+    },
+    deliveryModes: rule.list({ type: 'string', enum: ['pickup', 'local_delivery', 'national_shipping'] }, { default: [] }),
+    businessInfo: rule.text(1000),
+    planId: rule.id(),
+    ownerCustomerId: rule.id(),
+    termsVersion: rule.text(20),
+    termsAcceptedAt: rule.date(),
+    approvedAt: rule.date(),
+    statusReason: rule.text(500),
     metadata: rule.metadata(),
   },
 });
@@ -133,6 +182,44 @@ export class SellerService extends BaseService {
 
   active() {
     return this.repository.all({ status: 'active' });
+  }
+
+  byCode(code) {
+    return this.repository.find({ code: String(code || '').toLowerCase() });
+  }
+
+  /**
+   * Perfil público de la tienda. Nunca incluye RUC, razón social, correo,
+   * teléfono de contacto ni la dirección exacta; las coordenadas solo si la
+   * tienda eligió hacerlas públicas.
+   */
+  publicView(seller) {
+    if (!seller) return null;
+    const location = seller.location || {};
+    return {
+      id: seller.id,
+      code: seller.code,
+      name: seller.name,
+      type: seller.type || 'commerce',
+      tagline: seller.tagline || null,
+      description: seller.description || null,
+      logoUrl: seller.logoUrl || null,
+      bannerUrl: seller.bannerUrl || null,
+      categoryIds: seller.categoryIds || [],
+      localityId: seller.localityId || null,
+      area: location.area || null,
+      publicLocation: location.public && Number.isFinite(location.lat) && Number.isFinite(location.lng)
+        ? { lat: location.lat, lng: location.lng }
+        : null,
+      hours: seller.hours || [],
+      social: seller.social || {},
+      deliveryModes: seller.deliveryModes || [],
+      businessInfo: seller.businessInfo || null,
+      website: seller.website || null,
+      status: seller.status,
+      approvedAt: seller.approvedAt || null,
+      createdAt: seller.createdAt,
+    };
   }
 
   /**

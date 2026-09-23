@@ -83,6 +83,17 @@ export class DiagnosticsService {
       ['payments', 'paymentCollectionId', 'paymentCollections'],
       ['fulfillments', 'orderId', 'orders'],
       ['addresses', 'customerId', 'customers'],
+      // Marketplace (v4).
+      ['products', 'sellerId', 'sellers'],
+      ['products', 'supplierId', 'suppliers'],
+      ['sellers', 'localityId', 'localities'],
+      ['sellerMembers', 'sellerId', 'sellers'],
+      ['sellerMembers', 'customerId', 'customers'],
+      ['vendorOrders', 'orderId', 'orders'],
+      ['vendorOrders', 'sellerId', 'sellers'],
+      ['reviews', 'productId', 'products'],
+      ['supplierProducts', 'productId', 'products'],
+      ['supplierOrders', 'vendorOrderId', 'vendorOrders'],
     ];
 
     const findings = [];
@@ -209,7 +220,8 @@ export class DiagnosticsService {
 
     if (router) {
       for (const route of router.routes) {
-        const isAdmin = route.path.includes('/admin/');
+        // Solo las APIs: `/admin/*` sin prefijo es el shell HTML de la SPA, sin datos.
+        const isAdmin = route.path.startsWith('/api/') && route.path.includes('/admin/');
         if (isAdmin && route.permission === null && !route.path.includes('/admin/:resource')) {
           findings.push({ code: 'admin_route_without_permission', severity: 'critical', method: route.method, path: route.path });
         }
@@ -301,6 +313,28 @@ export default {
           handler: () => {
             const findings = service().referentialIntegrity();
             return { healthy: findings.length === 0, findings };
+          },
+        },
+        {
+          method: 'GET',
+          path: '/notifications',
+          permission: 'settings:read',
+          summary: 'Últimos avisos enviados o registrados, para comprobar qué salió y qué falló.',
+          tags: ['operación'],
+          bodyless: true,
+          query: { template: rule.text(60), status: rule.text(20), limit: rule.quantity({ min: 1, max: 200 }) },
+          handler: ctx => {
+            // Sin el cuerpo: puede llevar enlaces firmados de recuperación o códigos.
+            const rows = container.resolve('notifications').list({
+              template: ctx.query.template || null,
+              status: ctx.query.status || null,
+              limit: Number(ctx.query.limit) || 50,
+            });
+            const data = rows.map(row => ({
+              id: row.id, template: row.template, channel: row.channel, to: row.to,
+              status: row.status, entityId: row.entityId || null, createdAt: row.createdAt, error: row.error || null,
+            }));
+            return { data, count: data.length };
           },
         },
         {

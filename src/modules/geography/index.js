@@ -135,7 +135,10 @@ export class ZoneService extends BaseService {
   resolve(address = {}) {
     const country = String(address.countryCode || '').toLowerCase();
     const postal = String(address.postalCode || '').trim();
-    const candidates = this.repository.all({ active: true });
+    // Las zonas sembradas no traen `active` (la semilla no aplica los valores por
+    // defecto del esquema): filtrar por `active: true` las descartaba todas y
+    // ninguna opción de envío resultaba elegible. Ausente equivale a activa.
+    const candidates = this.repository.all().filter(zone => zone.active !== false);
 
     const score = zone => {
       let points = 0;

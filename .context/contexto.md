@@ -3,7 +3,7 @@
 Fecha de revisión estructural: 2026-09-14. Identificador: ndivepa.
 
 ## Producto y alcance
-Plataforma de afiliación en desarrollo.
+Marketplace multivendedor y comunidad de comercio local (Carapeguá primero) con módulo de afiliación, en desarrollo. Ver [Marketplace.md](Marketplace.md).
 
 Tecnología y persistencia: Node/HTML/JS; JSON local; incluye GraphQL
 
@@ -38,4 +38,5 @@ No copiar versiones, estado de Git o resultados históricos como si fueran hecho
 - [base-datos.md](<base-datos.md>)
 - [despliegue.md](<despliegue.md>)
 - [seguridad.md](<seguridad.md>)
+- [Marketplace.md](<Marketplace.md>)
 <!-- END ECOSYSTEM DETAILS -->

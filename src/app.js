@@ -56,7 +56,7 @@ import taxModule from './modules/tax/index.js';
 import channelModule from './modules/channel/index.js';
 import alertModule from './modules/alert/index.js';
 import accessModule from './modules/access/index.js';
-import customerModule from './modules/customer/index.js';
+import customerModule, { customerAuthenticator } from './modules/customer/index.js';
 import catalogModule from './modules/catalog/index.js';
 import pricingModule from './modules/pricing/index.js';
 import inventoryModule from './modules/inventory/index.js';
@@ -74,6 +74,11 @@ import fulfillmentModule from './modules/fulfillment/index.js';
 import checkoutModule from './modules/checkout/index.js';
 import contentModule from './modules/content/index.js';
 import diagnosticsModule from './modules/diagnostics/index.js';
+import marketplaceModule from './modules/marketplace/index.js';
+import communityModule from './modules/community/index.js';
+import dropshippingModule from './modules/dropshipping/index.js';
+import advertisingModule from './modules/advertising/index.js';
+import { seedMarketplaceDemo } from './marketplace-demo-seed.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -102,6 +107,10 @@ export const MODULES = [
   fulfillmentModule,
   checkoutModule,
   contentModule,
+  marketplaceModule,
+  communityModule,
+  dropshippingModule,
+  advertisingModule,
   diagnosticsModule,
 ];
 
@@ -198,6 +207,10 @@ export async function createApp({ env = process.env, plugins = [], seed = null }
     }
   }
 
+  // `/api/v1/admin/audits` exigía `audit:read` sin que nadie declarara el recurso:
+  // la conformidad lo marcaba como permiso desconocido y solo superadmin pasaba.
+  permissions.declare('audit', { actions: ['read'], description: 'Registro de auditoría.' });
+
   // --- Plugins ----------------------------------------------------------------
   const routeCollections = { admin: [], store: [], auth: [] };
   for (const plugin of plugins) pluginRegistry.register(plugin);
@@ -273,7 +286,8 @@ async function seedApplication({ container, config, logger }) {
   if (!config.seed.demo) return { demo: { seeded: false, reason: 'SEED_DEMO desactivado' } };
   const demo = await seedDemoCatalog(container, logger);
   if (!demo.seeded) logger.debug('Sin catálogo de demostración', { reason: demo.reason });
-  return { demo };
+  const marketplace = await seedMarketplaceDemo(container, logger);
+  return { demo, marketplace };
 }
 
 /**
@@ -462,6 +476,7 @@ export function buildHttpApp(app) {
   // --- Autenticadores ---------------------------------------------------------
   for (const authenticator of accessModule.authenticators(container)) httpApp.useAuthenticator(authenticator);
   httpApp.useAuthenticator(channelModule.channelAuthenticator(container));
+  httpApp.useAuthenticator(customerAuthenticator(container));
 
   // --- Rate limits (los mismos umbrales que la v0.1, más los nuevos) ----------
   const ip = ctx => ctx.ip || 'unknown';
@@ -482,7 +497,9 @@ export function buildHttpApp(app) {
   );
   httpApp.useRateLimit(
     ctx => ['POST', 'PATCH', 'PUT', 'DELETE'].includes(ctx.method) && ctx.url.pathname.startsWith('/api/'),
-    ctx => `write:${ctx.actor?.id || ip(ctx)}`,
+    // Por cuenta cuando la hay (panel o cliente) y por IP solo para invitados: en una
+    // conexión compartida, dos personas distintas no deben gastarse el cupo entre sí.
+    ctx => `write:${ctx.actor?.id || ctx.customerId || ip(ctx)}`,
     config.rateLimits.write,
   );
 

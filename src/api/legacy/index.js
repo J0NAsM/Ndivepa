@@ -154,9 +154,13 @@ export function legacyRoutes(container) {
       bodyless: true,
       handler: ctx => {
         const includeAll = ctx.query.all === 'true' && ctx.actor?.type === 'user';
-        const products = includeAll
+        // El contrato v0.1 es el catálogo **afiliado**: los productos del
+        // marketplace (locales, propios, dropshipping) tienen su propia API y aquí
+        // aparecerían etiquetados como afiliados sin serlo.
+        const products = (includeAll
           ? catalog().products.repository.all()
-          : catalog().products.published();
+          : catalog().products.published())
+          .filter(product => product.monetizationType !== 'DIRECT' && (product.commercialModel || 'AFILIADO') === 'AFILIADO');
         // La v0.1 devolvía un array plano, no un sobre con `data`.
         return respond.json(ctx.res, 200, products.map(product => legacyProductView(container, product)));
       },

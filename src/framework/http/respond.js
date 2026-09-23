@@ -56,10 +56,14 @@ export function redirect(res, location, { status = 302, headers = {} } = {}) {
 
 /** Sobre coherente para listas (M-0132). */
 export function list(res, result, headers = {}) {
+  // Los campos adicionales del resultado (facetas, correcciones, contadores) se
+  // conservan; el sobre estándar va después y no se puede sobrescribir.
+  const { data: _data, count: _count, limit: _limit, offset: _offset, hasMore: _hasMore, cursor: _cursor, ...extra } = result;
   return json(
     res,
     200,
     {
+      ...extra,
       data: result.data,
       count: result.count,
       limit: result.limit,

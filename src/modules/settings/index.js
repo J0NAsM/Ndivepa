@@ -109,6 +109,24 @@ const STORE_SETTINGS_SCHEMA = {
       requireValidLinkToPublish: rule.flag(),
     },
   },
+  // Marketplace multivendedor. Nada aquí depende de una ciudad concreta: la
+  // localidad inicial es un dato, no una regla del código.
+  marketplace: {
+    type: 'object',
+    shape: {
+      name: rule.text(120),
+      tagline: rule.text(200),
+      defaultLocalityId: rule.id(),
+      currencyCode: rule.currency(),
+      sellerApprovalRequired: rule.flag(),
+      productModerationRequired: rule.flag(),
+      reviewsRequirePurchase: rule.flag(),
+      reviewsRequireModeration: rule.flag(),
+      messagesPerMinute: { type: 'integer', coerce: true, min: 1, max: 120 },
+      sellerTermsVersion: rule.text(20),
+      payoutDelayDays: { type: 'integer', coerce: true, min: 0, max: 120 },
+    },
+  },
   metadata: rule.metadata(),
 };
 
@@ -133,6 +151,19 @@ export const DEFAULT_SETTINGS = {
   order: { codePrefix: 'ND', returnWindowDays: 30, autoCompleteAfterDays: 30 },
   inventory: { lowStockThreshold: 5, allowBackorder: false, hideOutOfStock: false },
   affiliate: { linkStaleDays: 14, priceStaleDays: 30, attributionWindowDays: 30, requireValidLinkToPublish: true },
+  marketplace: {
+    name: 'Ndivepa',
+    tagline: 'El punto de encuentro de comercios, emprendedores, artesanos y compradores.',
+    defaultLocalityId: null,
+    currencyCode: 'PYG',
+    sellerApprovalRequired: true,
+    productModerationRequired: false,
+    reviewsRequirePurchase: true,
+    reviewsRequireModeration: false,
+    messagesPerMinute: 6,
+    sellerTermsVersion: '2026-09',
+    payoutDelayDays: 7,
+  },
   metadata: {},
 };
 
@@ -147,7 +178,15 @@ export class SettingsService {
   /** Ajustes efectivos: los guardados sobre los valores por defecto. */
   all() {
     const stored = this.store.read().settings || {};
-    return { ...DEFAULT_SETTINGS, ...stored, seo: { ...DEFAULT_SETTINGS.seo, ...(stored.seo || {}) } };
+    // `COMMERCE_MODE` del entorno es el valor por defecto de la instalación. Antes
+    // `DEFAULT_SETTINGS.commerceMode` lo tapaba siempre y la variable no tenía efecto.
+    return {
+      ...DEFAULT_SETTINGS,
+      commerceMode: this.config?.commerceMode || DEFAULT_SETTINGS.commerceMode,
+      ...stored,
+      seo: { ...DEFAULT_SETTINGS.seo, ...(stored.seo || {}) },
+      marketplace: { ...DEFAULT_SETTINGS.marketplace, ...(stored.marketplace || {}) },
+    };
   }
 
   get(path, fallback = null) {
@@ -224,7 +263,13 @@ export class SettingsService {
     }
 
     const after = await this.store.transaction(state => {
-      state.settings = { ...state.settings, ...changes, updatedAt: now() };
+      // Los bloques anidados se fusionan: un PATCH de `marketplace.name` no debe
+      // borrar el resto de claves ya guardadas en `marketplace`.
+      const merged = { ...changes };
+      for (const key of ['seo', 'order', 'inventory', 'affiliate', 'marketplace']) {
+        if (changes[key]) merged[key] = { ...(state.settings?.[key] || {}), ...changes[key] };
+      }
+      state.settings = { ...state.settings, ...merged, updatedAt: now() };
       return { ...DEFAULT_SETTINGS, ...state.settings };
     });
 

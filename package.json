@@ -24,7 +24,8 @@
     "test": "node --test",
     "audit:dependencies": "npm audit --omit=dev --audit-level=high",
     "check": "npm run lint && npm run verify && npm test",
-    "check:full": "npm run check && npm run audit:dependencies"
+    "check:full": "npm run check && npm run test:ui && npm run audit:dependencies",
+    "test:ui": "node scripts/test-ui.mjs"
   },
   "engines": {
     "node": ">=20"

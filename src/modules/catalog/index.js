@@ -21,6 +21,50 @@ export const PRODUCT_STATUSES = ['draft', 'proposed', 'published', 'rejected'];
 export const PRODUCT_TYPES = ['physical', 'digital', 'service', 'course', 'bundle', 'subscription', 'other'];
 export const MONETIZATION = ['AFFILIATE', 'DIRECT', 'BOTH'];
 
+/**
+ * Modelos comerciales del marketplace.
+ *
+ * `monetizationType` responde a **cómo** se cobra (enlace externo o venta directa);
+ * `commercialModel` responde a **quién** vende y despacha. Son ejes distintos, por
+ * eso no se fusionan. El registro es extensible: un modelo nuevo se declara con
+ * `registerCommercialModel` sin tocar la validación.
+ *
+ *  - `cta: 'cart'`     el comprador lo añade al carrito del marketplace.
+ *  - `cta: 'external'` el comprador sale al sitio del comercio (se avisa siempre).
+ */
+export const COMMERCIAL_MODELS = {
+  LOCAL: {
+    label: 'Producto local', cta: 'cart', fulfilledBy: 'seller', requires: 'sellerId', monetization: ['DIRECT', 'BOTH'],
+  },
+  PROPIO: {
+    label: 'Producto propio', cta: 'cart', fulfilledBy: 'platform', requires: null, monetization: ['DIRECT', 'BOTH'],
+  },
+  DROPSHIPPING: {
+    label: 'Dropshipping', cta: 'cart', fulfilledBy: 'supplier', requires: 'supplierId', monetization: ['DIRECT'],
+  },
+  AFILIADO: {
+    label: 'Producto afiliado', cta: 'external', fulfilledBy: 'external', requires: null, monetization: ['AFFILIATE'],
+  },
+};
+
+export function registerCommercialModel(code, definition) {
+  const key = String(code || '').trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]{1,30}$/.test(key)) throw new TypeError(`Código de modelo comercial inválido: ${code}`);
+  COMMERCIAL_MODELS[key] = { cta: 'cart', fulfilledBy: 'platform', requires: null, monetization: ['DIRECT'], ...definition };
+  return COMMERCIAL_MODELS[key];
+}
+
+/** Deduce el modelo de un producto que no lo declara (datos anteriores a la v4). */
+export function inferCommercialModel(product) {
+  if (product?.commercialModel && COMMERCIAL_MODELS[product.commercialModel]) return product.commercialModel;
+  if (product?.monetizationType === 'AFFILIATE') return 'AFILIADO';
+  if (product?.supplierId) return 'DROPSHIPPING';
+  if (product?.sellerId) return 'LOCAL';
+  return 'PROPIO';
+}
+
+export const DELIVERY_MODES = ['pickup', 'local_delivery', 'national_shipping', 'supplier_shipping'];
+
 /** Transiciones válidas del estado de un producto (M-0335). */
 export const STATUS_TRANSITIONS = {
   draft: ['proposed', 'published', 'rejected'],
@@ -281,6 +325,19 @@ export const productResource = defineResource({
         canonical: rule.text(300),
         socialImage: rule.text(300),
         noindex: rule.flag(),
+      },
+    },
+    // Marketplace (v4): quién vende, quién despacha y desde dónde.
+    commercialModel: { type: 'string', maxLength: 32, pattern: /^[A-Z][A-Z0-9_]{1,30}$/, patternMessage: 'Modelo comercial no válido.' },
+    sellerId: rule.id(),
+    supplierId: rule.id(),
+    localityId: rule.id(),
+    deliveryModes: rule.list({ type: 'string', enum: DELIVERY_MODES }, { default: [] }),
+    shippingInfo: {
+      type: 'object',
+      shape: {
+        handlingDays: { type: 'integer', coerce: true, min: 0, max: 90 },
+        notes: rule.text(400),
       },
     },
     // Campos afiliados heredados de la v0.1 (M-0167, M-0168).
@@ -590,8 +647,10 @@ export class ProductService extends BaseService {
 
   async beforeCreate(data) {
     const handle = data.handle || uniqueSlug(data.name, this.handles());
+    const prepared = { ...data, commercialModel: inferCommercialModel(data) };
+    this.assertCommercialModel(prepared);
     return {
-      ...data,
+      ...prepared,
       handle,
       handleHistory: [],
       publishedAt: data.status === 'published' ? now() : null,
@@ -600,7 +659,36 @@ export class ProductService extends BaseService {
     };
   }
 
+  /**
+   * Coherencia entre modelo comercial, monetización y responsable (v4).
+   * Un producto afiliado nunca entra al carrito y uno local siempre tiene tienda.
+   */
+  assertCommercialModel(product) {
+    const code = product.commercialModel;
+    const model = COMMERCIAL_MODELS[code];
+    if (!model) throw ValidationError.single('commercialModel', `Modelo comercial desconocido: ${code}.`);
+    const issues = [];
+    if (!model.monetization.includes(product.monetizationType)) {
+      issues.push({
+        field: 'monetizationType',
+        message: `El modelo ${code} admite monetización ${model.monetization.join(' o ')}, no ${product.monetizationType}.`,
+      });
+    }
+    if (model.requires && !product[model.requires]) {
+      issues.push({ field: model.requires, message: `El modelo ${code} necesita ${model.requires}.` });
+    }
+    if (issues.length) throw new ValidationError(issues);
+    return true;
+  }
+
   async beforeUpdate(existing, changes) {
+    const commercialFields = ['commercialModel', 'monetizationType', 'sellerId', 'supplierId'];
+    if (commercialFields.some(field => Object.hasOwn(changes, field))) {
+      const merged = { ...existing, ...changes };
+      if (!Object.hasOwn(changes, 'commercialModel')) merged.commercialModel = existing.commercialModel || inferCommercialModel(merged);
+      this.assertCommercialModel(merged);
+      changes.commercialModel = merged.commercialModel;
+    }
     if (changes.status && changes.status !== existing.status) {
       this.assertTransition(existing, changes.status);
       if (changes.status === 'published') {
@@ -608,7 +696,7 @@ export class ProductService extends BaseService {
       }
     }
     const next = { ...existing, ...changes };
-    const affectsPublication = ['status', 'merchantId', 'programId', 'monetizationType']
+    const affectsPublication = ['status', 'merchantId', 'programId', 'monetizationType', 'commercialModel', 'sellerId', 'supplierId']
       .some(field => Object.hasOwn(changes, field));
     if (next.status === 'published' && affectsPublication) this.assertPublishable(next);
     // Al cambiar el handle se guarda el anterior para poder redirigir (M-0336).
@@ -663,8 +751,25 @@ export class ProductService extends BaseService {
     }
 
     if (!isDirect && !isAffiliate) issues.push({ field: 'monetizationType', message: 'Tipo de monetización no reconocido.' });
+
+    // Una tienda o un proveedor que no están activos no pueden tener fichas publicadas.
+    const model = inferCommercialModel(product);
+    if (model === 'LOCAL') {
+      const seller = this.store.collection('sellers').find(row => row.id === product.sellerId && !row.deletedAt);
+      if (!seller || seller.status !== 'active') issues.push({ field: 'sellerId', message: 'La tienda del producto no está aprobada.' });
+    }
+    if (model === 'DROPSHIPPING') {
+      const supplier = this.store.collection('suppliers').find(row => row.id === product.supplierId && !row.deletedAt);
+      if (!supplier || supplier.status !== 'active') issues.push({ field: 'supplierId', message: 'El proveedor del producto no está activo.' });
+    }
     if (issues.length) throw new ValidationError(issues);
     return true;
+  }
+
+  /** Enriquecedores del documento de búsqueda registrados por otros módulos. */
+  addSearchEnricher(enricher) {
+    this.searchEnrichers = [...(this.searchEnrichers || []), enricher];
+    return this;
   }
 
   byHandle(handle) {
@@ -876,7 +981,14 @@ export class ProductService extends BaseService {
     }
     const category = product.categoryId ? this.categories.repository.byId(product.categoryId) : null;
     if (category) facets.categoria = [category.handle];
-    return {
+    // La categoría y sus antecesoras también son términos: «hogar» encuentra «textiles».
+    const categoryNames = [];
+    for (let cursor = category, guard = 0; cursor && guard < 10; guard += 1) {
+      categoryNames.push(cursor.name);
+      cursor = cursor.parentId ? this.categories.repository.byId(cursor.parentId) : null;
+    }
+    const tags = (product.tagIds || []).map(id => this.tags.repository.byId(id)?.value).filter(Boolean);
+    const document = {
       id: product.id,
       fields: {
         name: product.name,
@@ -884,12 +996,20 @@ export class ProductService extends BaseService {
         description: product.shortDescription || product.description,
         brand: product.brand,
         sku: variants.map(variant => variant.sku).filter(Boolean).join(' '),
+        tags: tags.join(' '),
+        category: categoryNames.join(' '),
       },
       facets,
       filters: {
         status: product.status,
         type: product.type,
         monetizationType: product.monetizationType,
+        commercialModel: inferCommercialModel(product),
+        sellerId: product.sellerId || null,
+        supplierId: product.supplierId || null,
+        localityId: product.localityId || null,
+        deliveryModes: product.deliveryModes || [],
+        categoryIds: [...new Set([product.categoryId, ...(product.categoryIds || [])].filter(Boolean))],
         categoryId: product.categoryId,
         collectionIds: product.collectionIds || [],
         channelIds: product.channelIds || [],
@@ -906,8 +1026,48 @@ export class ProductService extends BaseService {
         price: product.price || null,
         status: product.status,
         featured: Boolean(product.featured),
+        commercialModel: inferCommercialModel(product),
       },
     };
+    for (const enricher of this.searchEnrichers || []) {
+      try {
+        enricher(document, product);
+      } catch {
+        // Un enriquecedor defectuoso no debe dejar el catálogo sin índice.
+      }
+    }
+    return document;
+  }
+
+  /**
+   * Indexa un único producto (M-0109). Publicar lo agrega, despublicar o borrar lo
+   * quita. Reindexar el catálogo entero en cada cambio no escala: con unos miles de
+   * fichas, guardar un precio bloqueaba el proceso.
+   */
+  indexProduct(product) {
+    if (!product) return false;
+    if (product.status !== 'published' || product.deletedAt) return this.search.remove(product.id);
+    return this.search.put(this.toSearchDocument(product));
+  }
+
+  indexProductId(productId) {
+    return this.indexProduct(this.repository.byId(productId, { withDeleted: true }));
+  }
+
+  /** Reindexa lo que depende de una variante (SKU, precio, stock). */
+  indexByVariant(variantId) {
+    const variant = this.variants.repository.byId(variantId, { withDeleted: true });
+    return variant ? this.indexProductId(variant.productId) : false;
+  }
+
+  /** Reindexa el catálogo de una tienda (cambió su estado, su nombre o su zona). */
+  indexSeller(sellerId) {
+    let count = 0;
+    for (const product of this.repository.all({ sellerId })) {
+      this.indexProduct(product);
+      count += 1;
+    }
+    return count;
   }
 
   /** Reindexa todo el catálogo publicado (M-0390). */
@@ -1006,16 +1166,30 @@ export default {
     ], 'id');
   },
 
-  subscribers: container => [
-    // Reindexado incremental: el índice se mantiene al día sin tocar el request (M-0109).
-    {
-      event: 'product.*',
-      handler: () => {
-        const catalog = container.resolve('catalog');
-        if (container.resolve('config').features.search) catalog.products.reindex();
+  subscribers: container => {
+    const enabled = () => container.resolve('config').features.search;
+    const catalog = () => container.resolve('catalog');
+    return [
+      // Reindexado incremental: solo el producto afectado (M-0109).
+      {
+        event: 'product.*',
+        handler: ({ id, record }) => {
+          if (!enabled()) return;
+          if (record?.id) catalog().products.indexProduct(record);
+          else if (id) catalog().products.indexProductId(id);
+        },
       },
-    },
-  ],
+      // El SKU y el precio forman parte del documento del producto.
+      { event: 'variant.*', handler: ({ id, record }) => enabled() && catalog().products.indexByVariant(record?.id || id) },
+      {
+        event: 'price.*',
+        handler: ({ record, before }) => {
+          const variantId = record?.variantId || before?.variantId;
+          if (enabled() && variantId) catalog().products.indexByVariant(variantId);
+        },
+      },
+    ];
+  },
 
   jobs: container => [
     {

@@ -9,6 +9,7 @@ import { escapeHtml, escapeJsonLd, escapeXml, slug, truncate } from '../../frame
 import { format as formatMoney } from '../../framework/money.js';
 import { ageInDays, now } from '../../framework/dates.js';
 import * as respond from '../../framework/http/respond.js';
+import { marketplaceSeoRoutes } from './marketplace.js';
 
 const BASE_STYLE = `
 :root{--bg:#f6f8fc;--fg:#15213a;--muted:#62708a;--line:#e5e9f0;--card:#fff;--accent:#6457e9;--shadow:0 14px 34px #17233b12}
@@ -277,12 +278,14 @@ ${view.affiliateDisclosure ? `<p class="notice"><strong>Divulgación afiliada:</
     });
   }
 
-  sitemap(ctx) {
+  sitemap(ctx, extra = []) {
     const origin = this.origin(ctx);
     const entries = [{ loc: `${origin}/`, lastmod: null, priority: '1.0' }];
 
+    // Fichas editoriales de productos afiliados; el resto va con su URL del marketplace.
     for (const product of this.catalog.products.published()) {
       if (product.seo?.noindex) continue;
+      if ((product.commercialModel || 'AFILIADO') !== 'AFILIADO') continue;
       entries.push({
         loc: `${origin}${productPath(product)}`,
         lastmod: product.price?.updatedAt || product.updatedAt || product.createdAt,
@@ -293,6 +296,7 @@ ${view.affiliateDisclosure ? `<p class="notice"><strong>Divulgación afiliada:</
       if (!campaign.code) continue;
       entries.push({ loc: `${origin}/campana/${encodeURIComponent(campaign.code)}`, lastmod: campaign.updatedAt, priority: '0.6' });
     }
+    entries.push(...extra);
     for (const content of this.content.published()) {
       if (content.seo?.noindex) continue;
       entries.push({ loc: `${origin}/contenido/${encodeURIComponent(content.handle)}`, lastmod: content.updatedAt, priority: '0.7' });
@@ -314,6 +318,12 @@ ${view.affiliateDisclosure ? `<p class="notice"><strong>Divulgación afiliada:</
       'Disallow: /api/',
       'Disallow: /go/',
       'Disallow: /uploads/',
+      'Disallow: /carrito',
+      'Disallow: /checkout',
+      'Disallow: /cuenta',
+      'Disallow: /mi-tienda',
+      'Disallow: /admin',
+      'Disallow: /buscar',
       `Sitemap: ${origin}/sitemap.xml`,
       '',
     ].join('\n');
@@ -323,8 +333,10 @@ ${view.affiliateDisclosure ? `<p class="notice"><strong>Divulgación afiliada:</
 /** Rutas SEO, registradas sin prefijo. */
 export function seoRoutes(container, config) {
   const renderer = new SeoRenderer({ container, config });
+  const marketplace = marketplaceSeoRoutes(container, config);
 
   return [
+    ...marketplace.routes,
     {
       method: 'GET',
       path: '/sitemap.xml',
@@ -332,7 +344,7 @@ export function seoRoutes(container, config) {
       bodyless: true,
       summary: 'Sitemap XML dinámico con fichas, campañas y contenido.',
       tags: ['seo'],
-      handler: ctx => respond.xml(ctx.res, 200, renderer.sitemap(ctx), { 'Cache-Control': 'public, max-age=600' }),
+      handler: ctx => respond.xml(ctx.res, 200, renderer.sitemap(ctx, marketplace.seo.sitemapEntries(ctx)), { 'Cache-Control': 'public, max-age=600' }),
     },
     {
       method: 'GET',
@@ -354,7 +366,14 @@ export function seoRoutes(container, config) {
         const route = ctx.params.route;
         const catalog = container.resolve('catalog');
         const product = catalog.products.published().find(item => route === `${slug(item.name)}-${item.id}`);
-        if (!product) return respond.html(ctx.res, 404, renderer.notFoundPage('Oferta'));
+        if (!product) {
+          // Ficha del marketplace por `handle` (productos locales, propios, dropshipping y afiliados).
+          try {
+            return respond.html(ctx.res, 200, marketplace.seo.product(ctx, route), { 'Cache-Control': 'public, max-age=60' });
+          } catch {
+            return respond.html(ctx.res, 404, renderer.notFoundPage('Oferta'));
+          }
+        }
         return respond.html(ctx.res, 200, renderer.renderProduct(ctx, product), { 'Cache-Control': 'public, max-age=120' });
       },
     },

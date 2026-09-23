@@ -66,7 +66,11 @@ export async function readJsonBody(req, { maxBytes = 1_000_000, maxDepth = 24 } 
 
   let parsed;
   try {
-    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const text = Buffer.concat(chunks).toString('utf8');
+    parsed = JSON.parse(text);
+    // El texto exacto se conserva para verificar firmas HMAC (postbacks de
+    // afiliación): re-serializar el JSON no reproduce los bytes firmados.
+    Object.defineProperty(req, 'ndivepaRawBody', { value: text, enumerable: false, configurable: true });
   } catch {
     throw ValidationError.single('body', 'El cuerpo debe ser JSON válido.');
   }

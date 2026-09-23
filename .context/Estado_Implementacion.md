@@ -4,6 +4,16 @@ Las referencias a instalación de Docker o estado Git son fotografías fechadas.
 
 # Estado de implementación local
 
+## 2026-09-22 — Marketplace multivendedor (v4)
+
+Ndivepa pasa a ser un marketplace y comunidad de comercio local (Carapeguá primero, escalable por
+localidades) con productos locales, propios, de dropshipping y afiliados en un único catálogo. Detalle,
+decisiones, defectos previos corregidos, verificación y pendientes: [Marketplace.md](Marketplace.md).
+
+Verificación local: lint y verify sin incidencias, 89/89 pruebas, 0 vulnerabilidades en dependencias.
+
+---
+
 Actualizado: 2026-09-04
 
 La revisión integral más reciente implementó y verificó 112 mejoras en
